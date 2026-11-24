@@ -10,6 +10,8 @@
 #include <QElapsedTimer>
 #include <qpa/qwindowsysteminterface.h>
 #include <QGuiApplication>
+#include <QLibraryInfo>
+#include <QVersionNumber>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
@@ -84,6 +86,10 @@ int main(int argc, char **argv)
     // CINEFY_OFF="ao,shadows,..." switches features off, to measure what they cost.
     engine.rootContext()->setContextProperty(QStringLiteral("devOff"), qEnvironmentVariable("CINEFY_OFF"));
     // CINEFY_QUALITY=0|1|2 overrides the graphics quality setting (for measuring).
+    // Frustum culling skips instanced models (all the tapes, for one) by
+    // their base mesh alone before Qt 6.12, so they vanish: only use it there.
+    engine.rootContext()->setContextProperty(QStringLiteral("cullingWorks"),
+        QLibraryInfo::version() >= QVersionNumber(6, 12));
     engine.rootContext()->setContextProperty(QStringLiteral("devQuality"),
         qEnvironmentVariableIsSet("CINEFY_QUALITY") ? qEnvironmentVariableIntValue("CINEFY_QUALITY") : -1);
     QObject::connect(

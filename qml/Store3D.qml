@@ -416,7 +416,7 @@ Item {
         clipNear: 5
         // Skip everything outside the view (Qt draws it all by default): half
         // the shop is behind you at any moment.
-        frustumCullingEnabled: !root.off("culling")
+        frustumCullingEnabled: cullingWorks && !root.off("culling")
         clipFar: 20000
     }
 
