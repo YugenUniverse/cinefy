@@ -18,7 +18,7 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.12.*' # the version Cinefy is developed and tested with
-          modules: 'qtquick3d qtshadertools qtmultimedia'
+          modules: 'qtquick3d qtshadertools qtmultimedia qtquicktimeline' # Quick3D needs timeline since 6.12
           cache: true
 
       - name: Linux build tools
