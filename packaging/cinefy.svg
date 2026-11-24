@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect x="4" y="12" width="56" height="40" rx="4" fill="#1747c4"/>
+  <rect x="8" y="16" width="48" height="14" rx="2" fill="#ffd21f"/>
+  <text x="32" y="27" font-family="sans-serif" font-weight="900" font-size="9" text-anchor="middle" fill="#1747c4">CINEFY</text>
+  <rect x="12" y="34" width="40" height="14" rx="3" fill="#111"/>
+  <circle cx="22" cy="41" r="5" fill="#2a2a2a" stroke="#888" stroke-width="1.5"/>
+  <circle cx="42" cy="41" r="5" fill="#2a2a2a" stroke="#888" stroke-width="1.5"/>
+</svg>

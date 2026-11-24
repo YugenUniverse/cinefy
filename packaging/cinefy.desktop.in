@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Cinefy Video
+GenericName=Letterboxd video store
+Comment=Walk through your Letterboxd films in a 90s video rental store
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/cinefy
+Icon=cinefy
+Terminal=false
+Categories=AudioVideo;Video;Game;

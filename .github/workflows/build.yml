@@ -1,0 +1,40 @@
+# Builds Cinefy on Linux, Windows and macOS for every push / pull request,
+# and uploads a ready-to-run package for each.
+name: build
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.10.*'
+          modules: 'qtquick3d qtshadertools qtmultimedia'
+          cache: true
+
+      - name: Linux build tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libgl1-mesa-dev libxkbcommon-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Package
+        run: cmake --install build --config Release --prefix dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cinefy-${{ runner.os }}
+          path: dist
