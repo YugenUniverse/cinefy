@@ -161,7 +161,8 @@ void TmdbClient::finish(QNetworkReply *reply, Job job)
     }
     if (status == 429) { // rate limited: back off and retry the same step
         ++m_inFlight;    // keep the slot so idle() doesn't fire early
-        QTimer::singleShot(1500, this, [this, job] {
+        const int wait = qBound(500, reply->rawHeader("Retry-After").toInt() * 1000, 10000);
+        QTimer::singleShot(wait, this, [this, job] {
             --m_inFlight;
             if (job.generation == m_generation)
                 m_queue.prepend(job);

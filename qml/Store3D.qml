@@ -21,6 +21,8 @@ Item {
         if (vhsCase.visible) open.push("case")
         if (reading) open.push("diary")
         return (open.length ? open.join("+") : "none")
+               + (shutter > 0 ? " [shut " + shutter.toFixed(2) + "]" : "")
+               + " [at " + Math.round(player.x) + "," + Math.round(player.z) + " '" + location + "']"
                + " [room " + Math.round(store.halfWidth) + " x " + Math.round(store.backZ) + ".." + Math.round(store.frontZ) + "]"
     }
 
@@ -46,8 +48,8 @@ Item {
     // ---------------------------------------------------------------- player
     QtObject {
         id: player
-        property real x: store.entrance.x
-        property real z: store.entrance.z
+        property real x: 0
+        property real z: 0
         property real yaw: 0      // degrees, 0 looks down -Z (towards the shop)
         property real pitch: -2
         property real bob: 0
@@ -73,6 +75,46 @@ Item {
         running: !devMute
         PauseAnimation { duration: 900 }
         NumberAnimation { to: 1; duration: 1100; easing.type: Easing.InOutQuad }
+    }
+
+    // ---------------------------------------------------------------- opening time
+    // On a first visit the shop stays shut, shutter down, while your films
+    // are looked up on TMDB and their covers come in (the shelves get
+    // rearranged once the genres are known); then the shutter rolls up.
+    // With everything cached it is open straight away.
+    readonly property bool stockReady: !shop.stocking && atlas.loading === 0
+    property real shutter: 1 // 1 down .. 0 rolled up; never comes down again
+    readonly property bool shutterDown: shutter > 0.3
+    // Checked once the export has finished loading (just after the shop is
+    // created): is there anything left to fetch?
+    property bool startChecked: false
+    function checkStart() {
+        startChecked = true
+        if (stockReady)
+            shutter = 0
+    }
+    onStockReadyChanged: {
+        if (stockReady && startChecked && shutter === 1)
+            openDelay.restart()
+        else if (!stockReady)
+            openDelay.stop()
+    }
+    Timer { // let the shelves settle into their final layout first
+        id: openDelay
+        interval: 1200
+        onTriggered: if (root.stockReady && root.shutter === 1) { shutterSound.play(); rollUp.start() }
+    }
+    NumberAnimation { id: rollUp; target: root; property: "shutter"; to: 0; duration: 3400; easing.type: Easing.InOutSine }
+    // Outside, keep your place in front of the shop when it is rebuilt
+    // (the front moves when aisles are added).
+    property real frontSeen: 0 // set on start; a plain value, not a binding
+    Connections {
+        target: store
+        function onChanged() {
+            if (player.z > root.frontSeen)
+                player.z += store.frontZ - root.frontSeen
+            root.frontSeen = store.frontZ
+        }
     }
 
     readonly property bool uiOpen: vhsCase.visible || clerkDialog.visible || memberCard.visible
@@ -131,6 +173,10 @@ Item {
     Component.onCompleted: {
         if (devPerf)
             console.info(`perf: 3D shop created at ${Date.now() - devT0} ms`)
+        player.x = store.entrance.x
+        player.z = store.entrance.z
+        frontSeen = store.frontZ
+        Qt.callLater(checkStart)
         Qt.callLater(capture)
         if (devBake)
             bakeTimer.start()
@@ -146,6 +192,8 @@ Item {
     }
 
     function travelTo(v) {
+        if (v && shutterDown && v.z < store.frontZ)
+            return
         if (!v || v.x === undefined)
             return
         let yaw = v.yaw
@@ -244,9 +292,9 @@ Item {
     readonly property real nearDoor: Math.max(0, 1 - Math.hypot(player.x, store.frontZ - player.z) / 900)
     // The automatic doors open while you're near them.
     readonly property bool nearEntrance: Math.abs(player.x) < 260 && Math.abs(player.z - store.frontZ) < 300
-    property real doorOpen: nearEntrance ? 1 : 0
+    property real doorOpen: nearEntrance && !shutterDown ? 1 : 0
     Behavior on doorOpen { NumberAnimation { duration: 700; easing.type: Easing.InOutQuad } }
-    onNearEntranceChanged: if (nearEntrance) doorSound.play()
+    onNearEntranceChanged: if (nearEntrance && !shutterDown) doorSound.play()
 
     SoundEffect { muted: root.muted;
         source: sounds.url("rain")
@@ -267,6 +315,7 @@ Item {
         Component.onCompleted: play()
     }
     SoundEffect { muted: root.muted; id: chime; source: sounds.url("chime"); volume: root.volume * root.wake * (0.45) }
+    SoundEffect { muted: root.muted; id: shutterSound; source: sounds.url("shutter"); volume: root.volume * root.wake * (0.5) }
     SoundEffect { muted: root.muted; id: doorSound; source: sounds.url("door"); volume: root.volume * root.wake * (0.15) }
     SoundEffect { muted: root.muted; id: pickupSound; source: sounds.url("pickup"); volume: root.volume * root.wake * (0.7) }
 
@@ -298,7 +347,9 @@ Item {
                     const y = player.yaw * Math.PI / 180
                     const nx = player.x + (-Math.sin(y) * f + Math.cos(y) * s) * speed
                     const nz = player.z + (-Math.cos(y) * f - Math.sin(y) * s) * speed
-                    const p = store.collide(Qt.vector3d(player.x, 0, player.z), Qt.vector3d(nx, 0, nz), 26)
+                    let p = store.collide(Qt.vector3d(player.x, 0, player.z), Qt.vector3d(nx, 0, nz), 26)
+                    if (root.shutterDown && player.z >= store.frontZ + 30 && p.z < store.frontZ + 30)
+                        p = Qt.vector3d(p.x, 0, store.frontZ + 30) // the shutter is down
                     if ((player.z > store.frontZ) !== (p.z > store.frontZ))
                         chime.play() // the bell over the door
                     player.x = p.x
@@ -594,7 +645,7 @@ Item {
             bake: root.bake
         }
         Store3DWallRacks { bake: root.bake; visible: !root.off("racks") }
-        Store3DFacade { doorOpen: root.doorOpen; visible: !root.off("facade") }
+        Store3DFacade { doorOpen: root.doorOpen; shutter: root.shutter; visible: !root.off("facade") }
         // Street shapes, invisible, so they hide the shop when they stand in
         // front of it. From inside nothing on the street can, so skip them.
         Store3DStreet { holdout: true; visible: root.outdoors > 0.01 }
@@ -615,7 +666,7 @@ Item {
                 fragmentShader: "tape.frag"
                 property TextureInput atlas: TextureInput {
                     texture: Texture {
-                        textureData: atlas
+                        textureData: atlas.texture
                         generateMipmaps: true
                         mipFilter: Texture.Linear
                     }
@@ -1124,7 +1175,7 @@ Item {
         Text {
             id: locText
             anchors.centerIn: parent
-            text: root.location
+            text: root.shutterDown && player.z > store.frontZ ? "Outside · opening soon, the shelves are being stocked" : root.location
             color: Theme.yellow
             font.pixelSize: 15
             font.weight: Font.Black
@@ -1135,7 +1186,11 @@ Item {
     // Controls hint, fades after a while.
     Text {
         id: hint
-        anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: 22 }
+        // Below the place name and the status line, so they never overlap.
+        anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: 66 }
+        width: Math.min(implicitWidth, parent.width - 80)
+        wrapMode: Text.WordWrap
+        horizontalAlignment: Text.AlignHCenter
         text: "WASD walk  ·  mouse look  ·  click a tape  ·  J diary  ·  M map  ·  C card  ·  ask Dale for a film  ·  Alt pointer  ·  Esc menu"
         color: "white"
         style: Text.Outline

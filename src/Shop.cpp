@@ -5,6 +5,7 @@
 #include "ExportLoader.h"
 #include "FilmModel.h"
 #include "MatchCache.h"
+#include "Perf.h"
 #include "TmdbClient.h"
 
 #include <QDesktopServices>
@@ -266,6 +267,7 @@ void Shop::onMatched(int index, const TmdbMatch &match)
 
 void Shop::onStockIdle()
 {
+    perf::mark(QStringLiteral("stocked %1 films").arg(m_tmdb->total()));
     m_cache->save();
     m_matchedSinceSave = 0;
     rebuildAisles(); // genre aisles depend on TMDB data

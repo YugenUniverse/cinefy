@@ -61,6 +61,7 @@ qt_add_executable(cinefy
     src/PointerHelper.h src/PointerHelper.cpp
     src/SoundBank.h src/SoundBank.cpp
     src/LightBaker.h src/LightBaker.cpp
+    src/Perf.h
     src/Shop.h src/Shop.cpp
 )
 

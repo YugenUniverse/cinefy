@@ -86,5 +86,7 @@ private:
     int m_total = 0;
     quint64 m_generation = 0;
     bool m_reportedNetworkError = false;
-    static constexpr int MaxInFlight = 6;
+    // TMDB allows about 50 requests a second, and its API speaks HTTP/2, so
+    // many searches share one connection; 24 at a time stays under the limit.
+    static constexpr int MaxInFlight = 24;
 };

@@ -2,16 +2,19 @@
 
 #include "CachingNetwork.h"
 #include "FilmModel.h"
+#include "Perf.h"
 
 #include <QNetworkReply>
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QPainter>
 #include <QStandardPaths>
+#include <QThreadPool>
 
 namespace {
-constexpr int MaxInFlight = 8;
+constexpr int MaxInFlight = 24;
 constexpr int Pad = 2;
 }
 
@@ -20,14 +23,16 @@ CoverAtlas::CoverAtlas(QQuick3DObject *parent) : QQuick3DTextureData(parent)
     m_nam = CachingNetworkFactory().create(this);
     m_image = QImage(Size, Size, QImage::Format_RGBA8888);
     m_image.fill(QColor("#151517"));
-    setSize(QSize(Size, Size));
-    setFormat(QQuick3DTextureData::RGBA8);
-    setHasTransparency(false);
 
     // Re-uploading 64 MB is not free: batch covers as they stream in.
     m_uploadTimer.setSingleShot(true);
     m_uploadTimer.setInterval(4000); // each upload is 64 MB + mipmaps: batch them
     connect(&m_uploadTimer, &QTimer::timeout, this, &CoverAtlas::upload);
+    // While matches still stream in, the queue empties now and then for a
+    // moment: only finish once it has stayed empty for a bit.
+    m_settleTimer.setSingleShot(true);
+    m_settleTimer.setInterval(1500);
+    connect(&m_settleTimer, &QTimer::timeout, this, &CoverAtlas::settled);
     upload();
 }
 
@@ -105,35 +110,67 @@ void CoverAtlas::request(int film)
 void CoverAtlas::pump()
 {
     while (m_inFlight < MaxInFlight && !m_queue.isEmpty()) {
+        m_settleTimer.stop();
         const auto next = m_queue.dequeue();
         const int film = next.first;
         const QString path = next.second;
         ++m_inFlight;
         const quint64 generation = m_generation;
-        QNetworkReply *reply = m_nam->get(QNetworkRequest(QUrl(FilmModel::posterUrl(path, "w185"))));
+        QNetworkRequest req(QUrl(FilmModel::posterUrl(path, "w185")));
+        req.setTransferTimeout(20000);
+        QNetworkReply *reply = m_nam->get(req);
         connect(reply, &QNetworkReply::finished, this, [this, reply, film, generation] {
             reply->deleteLater();
-            --m_inFlight;
-            if (generation == m_generation) {
+            if (generation != m_generation || reply->error() != QNetworkReply::NoError) {
+                decoded(film, generation, {});
+                return;
+            }
+            // Decoding and scaling a JPEG takes a few ms: do it on a worker
+            // thread, so walking around stays smooth while covers stream in.
+            const QByteArray data = reply->readAll();
+            const QSize size = cellRect(film).size();
+            const QPointer<CoverAtlas> self(this);
+            QThreadPool::globalInstance()->start([self, data, size, film, generation] {
                 QImage cover;
-                if (reply->error() == QNetworkReply::NoError && cover.loadFromData(reply->readAll())) {
-                    drawCover(film, cover);
-                } else {
-                    // Forget it, so the next change to this film asks again;
-                    // and keep the half-blank atlas off the disk.
-                    m_shown.remove(film);
-                    ++m_failed;
-                }
-            }
-            emit loadingChanged();
-            pump();
-            if (m_queue.isEmpty() && m_inFlight == 0) { // all covers in: show and keep them
-                m_uploadTimer.stop();
-                upload();
-                saveCached();
-            }
+                if (cover.loadFromData(data))
+                    cover = cover.scaled(size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                                .convertToFormat(QImage::Format_RGBA8888);
+                QMetaObject::invokeMethod(qApp, [self, film, generation, cover] {
+                    if (self)
+                        self->decoded(film, generation, cover);
+                }, Qt::QueuedConnection);
+            });
         });
     }
+}
+
+void CoverAtlas::decoded(int film, quint64 generation, const QImage &cover)
+{
+    --m_inFlight;
+    if (generation == m_generation) {
+        if (!cover.isNull()) {
+            drawCover(film, cover);
+        } else {
+            // Forget it, so the next change to this film asks again;
+            // and keep the half-blank atlas off the disk.
+            m_shown.remove(film);
+            ++m_failed;
+        }
+    }
+    emit loadingChanged();
+    pump();
+    if (m_queue.isEmpty() && m_inFlight == 0)
+        m_settleTimer.start();
+}
+
+void CoverAtlas::settled()
+{
+    if (!m_queue.isEmpty() || m_inFlight > 0)
+        return;
+    perf::mark(QStringLiteral("covers in (%1 failed)").arg(m_failed));
+    m_uploadTimer.stop();
+    upload();
+    saveCached();
 }
 
 QRect CoverAtlas::cellRect(int film) const
@@ -182,8 +219,7 @@ void CoverAtlas::drawCover(int film, const QImage &cover)
     m_dirty = true;
     const QRect r = cellRect(film);
     QPainter p(&m_image);
-    p.setRenderHint(QPainter::SmoothPixmapTransform);
-    p.drawImage(r, cover.scaled(r.size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation));
+    p.drawImage(r.topLeft(), cover); // already scaled to the cell
     if (!m_uploadTimer.isActive())
         m_uploadTimer.start();
 }
@@ -238,6 +274,15 @@ void CoverAtlas::saveCached()
 
 void CoverAtlas::upload()
 {
-    setTextureData(QByteArray(reinterpret_cast<const char *>(m_image.constBits()),
-                              m_image.sizeInBytes()));
+    auto *texture = new QQuick3DTextureData(this);
+    texture->setSize(QSize(Size, Size));
+    texture->setFormat(QQuick3DTextureData::RGBA8);
+    texture->setHasTransparency(false);
+    texture->setTextureData(QByteArray(reinterpret_cast<const char *>(m_image.constBits()),
+                                       m_image.sizeInBytes()));
+    QQuick3DTextureData *old = m_texture;
+    m_texture = texture;
+    emit textureChanged();
+    if (old)
+        old->deleteLater();
 }

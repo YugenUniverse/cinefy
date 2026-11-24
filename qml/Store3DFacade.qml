@@ -10,6 +10,7 @@ Node {
     readonly property var store: shop.store
     readonly property real front: store.frontZ
     property real doorOpen: 0 // 0 closed .. 1 open, set by Store3D
+    property real shutter: 0  // 1 down (shop shut) .. 0 rolled up, set by Store3D
 
     component Metal: Model {
         property color tint: "#a8adb4"
@@ -338,17 +339,200 @@ Node {
         }
     }
 
+    // ------------------------------------------------------------ security shutters
+    // Roller shutters over the door and both windows while the shop is shut.
+    // They roll up into a box under the canopy; a note is taped on the door.
+    component SlatArt: Canvas { // one ribbed galvanised slat; repeated up the shutter
+        width: 256
+        height: 32
+        onPaint: {
+            const ctx = getContext("2d")
+            const g = ctx.createLinearGradient(0, 0, 0, height)
+            g.addColorStop(0.0, "#5d636b")
+            g.addColorStop(0.18, "#b9bfc6")
+            g.addColorStop(0.5, "#8d939b")
+            g.addColorStop(0.82, "#6b7179")
+            g.addColorStop(1.0, "#3e434a")
+            ctx.fillStyle = g
+            ctx.fillRect(0, 0, width, height)
+            let seed = 7
+            const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647
+            for (let i = 0; i < 260; ++i) { // grime and scuffs
+                ctx.fillStyle = rnd() < 0.5 ? "rgba(30,32,36,0.18)" : "rgba(220,225,230,0.12)"
+                ctx.fillRect(rnd() * width, rnd() * height, 1 + rnd() * 6, 1)
+            }
+        }
+    }
+    readonly property real openingTop: 240 // underside of the header over door and windows
+    component Shutter: Node {
+        id: sh
+        property real x0
+        property real x1
+        property real bottom: 0 // sill height when shut
+        readonly property real fullH: facade.openingTop - bottom
+        readonly property real h: Math.max(0, fullH * facade.shutter)
+        readonly property real w: x1 - x0
+        visible: facade.shutter > 0.001
+        Model { // the curtain of slats
+            visible: sh.h > 0.5
+            source: "#Rectangle"
+            position: Qt.vector3d((sh.x0 + sh.x1) / 2, facade.openingTop - sh.h / 2, facade.front + 11)
+            scale: Qt.vector3d(sh.w / 100, sh.h / 100, 1)
+            castsShadows: false
+            materials: PrincipledMaterial {
+                baseColorMap: Texture {
+                    sourceItem: SlatArt {}
+                    tilingModeHorizontal: Texture.Repeat
+                    tilingModeVertical: Texture.Repeat
+                    scaleU: sh.w / 240
+                    scaleV: sh.h / 7.5 // a slat every 7.5 cm
+                }
+                metalness: 0.55
+                roughness: 0.5
+                cullMode: Material.NoCulling
+            }
+        }
+        Model { // bottom rail
+            source: "#Cube"
+            position: Qt.vector3d((sh.x0 + sh.x1) / 2, facade.openingTop - sh.h + 2, facade.front + 12)
+            scale: Qt.vector3d(sh.w / 100, 0.05, 0.05)
+            castsShadows: false
+            materials: PrincipledMaterial { baseColor: "#3c4047"; metalness: 0.7; roughness: 0.4 }
+        }
+        Repeater3D { // guide rails either side
+            model: 2
+            Model {
+                required property int index
+                source: "#Cube"
+                position: Qt.vector3d(index === 0 ? sh.x0 - 2 : sh.x1 + 2, (sh.bottom + facade.openingTop) / 2, facade.front + 11)
+                scale: Qt.vector3d(0.05, sh.fullH / 100, 0.07)
+                castsShadows: false
+                materials: PrincipledMaterial { baseColor: "#4a4f57"; metalness: 0.7; roughness: 0.45 }
+            }
+        }
+        Model { // the box it rolls up into
+            source: "#Cube"
+            position: Qt.vector3d((sh.x0 + sh.x1) / 2, facade.openingTop + 9, facade.front + 14)
+            scale: Qt.vector3d((sh.w + 10) / 100, 0.2, 0.2)
+            castsShadows: false
+            materials: PrincipledMaterial { baseColor: "#50565e"; metalness: 0.6; roughness: 0.5 }
+        }
+    }
+    readonly property real winInner: store.doorHalfWidth + 30
+    readonly property real winOuter: store.halfWidth - 30
+    Shutter { x0: -store.doorHalfWidth - 6; x1: store.doorHalfWidth + 6 }
+    Shutter { x0: -facade.winOuter; x1: -facade.winInner; bottom: 70 }
+    Shutter { x0: facade.winInner; x1: facade.winOuter; bottom: 70 }
+
+    // A note taped to the door shutter, with how far the stocking has got.
+    Node {
+        // It rides up on the shutter and goes into the box with it.
+        readonly property real lift: facade.openingTop * (1 - facade.shutter)
+        visible: facade.shutter > 0 && lift + 132 + 39 < facade.openingTop
+        position: Qt.vector3d(4, lift + 132, facade.front + 11.6)
+        eulerRotation.z: -2.5
+        Model {
+            source: "#Rectangle"
+            scale: Qt.vector3d(0.6, 0.78, 1)
+            castsShadows: false
+            materials: PrincipledMaterial {
+                roughness: 0.85
+                baseColorMap: Texture {
+                    sourceItem: Rectangle {
+                        width: 600
+                        height: 780
+                        color: "#f4f1e8"
+                        Column {
+                            anchors.fill: parent
+                            anchors.margins: 36
+                            spacing: 20
+                            Text {
+                                width: parent.width
+                                horizontalAlignment: Text.AlignHCenter
+                                wrapMode: Text.WordWrap
+                                text: "SORRY,\nWE'RE STOCKING\nTHE SHELVES"
+                                color: "#c4231d"
+                                font.family: Theme.display
+                                font.weight: Font.Black
+                                font.pixelSize: 68
+                                lineHeight: 0.9
+                            }
+                            Rectangle { width: parent.width; height: 8; color: "#1d2a6b" }
+                            Text {
+                                width: parent.width
+                                horizontalAlignment: Text.AlignHCenter
+                                text: shop.stockTotal > 0 ? shop.stockDone + " of " + shop.stockTotal + " tapes"
+                                                          : "putting the covers on…"
+                                color: "#1d2a6b"
+                                font.weight: Font.Black
+                                font.pixelSize: 60
+                            }
+                            Rectangle { // progress, drawn like a marker-pen bar
+                                width: parent.width
+                                height: 60
+                                color: "transparent"
+                                border.color: "#1d2a6b"
+                                border.width: 8
+                                Rectangle {
+                                    x: 12; y: 12
+                                    height: parent.height - 24
+                                    width: (parent.width - 24) * (shop.stockTotal > 0 ? shop.stockDone / shop.stockTotal : 1)
+                                    color: "#1f5ce0"
+                                }
+                            }
+                            Text {
+                                width: parent.width
+                                horizontalAlignment: Text.AlignHCenter
+                                wrapMode: Text.WordWrap
+                                text: "Opening in a minute!\n— the staff"
+                                color: "#1d2a6b"
+                                font.italic: true
+                                font.weight: Font.Bold
+                                font.pixelSize: 52
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Repeater3D { // tape on the corners
+            model: 2
+            Model {
+                required property int index
+                source: "#Rectangle"
+                position: Qt.vector3d((index === 0 ? -1 : 1) * 30, 39, 0.3)
+                eulerRotation.z: index === 0 ? 35 : -35
+                scale: Qt.vector3d(0.14, 0.04, 1)
+                castsShadows: false
+                materials: PrincipledMaterial { baseColor: "#f1e4b8"; opacity: 0.8; alphaMode: PrincipledMaterial.Blend; roughness: 0.3 }
+            }
+        }
+    }
+
     // ------------------------------------------------------------ OPEN neon
     Node {
         id: openSign
         property real lit: 1
         position: Qt.vector3d(store.doorHalfWidth + 45, 215, facade.front - 6)
         scale: Qt.vector3d(0.25, 0.25, 0.25)
+        // Switched on once the shutter is up: a couple of stutters, then on.
+        property real power: facade.shutter > 0 ? 0 : 1
+        Behavior on power {
+            SequentialAnimation {
+                PauseAnimation { duration: 300 }
+                NumberAnimation { to: 0.8; duration: 40 }
+                NumberAnimation { to: 0; duration: 120 }
+                NumberAnimation { to: 1; duration: 50 }
+                NumberAnimation { to: 0.15; duration: 90 }
+                NumberAnimation { to: 1; duration: 60 }
+            }
+        }
         Text {
+            readonly property real lit: openSign.lit * openSign.power
             text: "OPEN"
-            color: Qt.rgba(1, 0.17 + 0.0 * openSign.lit, 0.84, 0.25 + 0.75 * openSign.lit)
+            color: Qt.rgba(1, 0.17, 0.84, 0.25 + 0.75 * lit)
             style: Text.Outline
-            styleColor: Qt.rgba(1, 0.82, 0.96, openSign.lit)
+            styleColor: Qt.rgba(1, 0.82, 0.96, lit)
             font.family: Theme.display
             font.weight: Font.Black
             font.pixelSize: 110

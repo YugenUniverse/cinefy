@@ -906,6 +906,8 @@ Node {
             id: banner
             required property string modelData
             required property int index
+            // Never wider than the gap to the next one, however narrow the shop.
+            readonly property real w: Math.min(275, store.halfWidth * 0.55 - 40)
             position: Qt.vector3d((index - 1) * store.halfWidth * 0.55, 262, store.frontZ * 0.25)
             Model {
                 castsShadows: false
@@ -922,8 +924,8 @@ Node {
                     eulerRotation.y: index * 180
                     SignFace { // a printed banner, centred on the rod
                         position: Qt.vector3d(0, -18.75, 0.6)
-                        w: 275
-                        h: 37.5
+                        w: banner.w
+                        h: banner.w * 37.5 / 275
                         glow: 0.3
                         art: Rectangle {
                             width: 1100

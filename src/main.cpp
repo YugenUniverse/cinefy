@@ -3,6 +3,7 @@
 #include "SoundBank.h"
 #include "LightBaker.h"
 #include "Shop.h"
+#include "Perf.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -19,11 +20,7 @@
 
 namespace {
 QtMessageHandler defaultHandler = nullptr;
-double appT0()
-{
-    static const double t0 = double(QDateTime::currentMSecsSinceEpoch());
-    return t0;
-}
+double appT0() { return perf::t0(); }
 
 // Drop two harmless, very noisy Qt Quick 3D messages: one is printed for
 // every 2D item used as a 3D texture (every sign), the other on quit.
@@ -148,7 +145,8 @@ int main(int argc, char **argv)
     // work too) and prints which panels are open after each, then quits.
     const QString keyTest = qEnvironmentVariable("CINEFY_KEYTEST");
     if (!keyTest.isEmpty()) {
-        QTimer::singleShot(4000, &app, [&engine, keyTest] {
+        const int keyDelay = qEnvironmentVariableIntValue("CINEFY_KEYTEST_DELAY");
+        QTimer::singleShot(keyDelay > 0 ? keyDelay : 4000, &app, [&engine, keyTest] {
             auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
             QObject *store = window ? window->findChild<QObject *>(QStringLiteral("store3d")) : nullptr;
             auto state = [store] {

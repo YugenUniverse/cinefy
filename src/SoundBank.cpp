@@ -325,6 +325,40 @@ QVector<float> door()
     return s;
 }
 
+QVector<float> shutter()
+{
+    // A roller shutter going up: the motor's drone, the slats clattering
+    // as they wind onto the drum, and a clunk when it reaches the top.
+    auto *rng = QRandomGenerator::global();
+    const double len = 3.6;
+    QVector<float> s(int(Rate * len));
+    float low = 0;
+    for (int i = 0; i < s.size(); ++i) {
+        const double t = double(i) / Rate;
+        const double env = std::min(1.0, t / 0.25) * std::min(1.0, (3.4 - t) / 0.2);
+        low += 0.05f * (float(rng->generateDouble() * 2 - 1) - low);
+        s[i] = float(std::max(0.0, env) * (0.07 * std::sin(2 * Pi * 62 * t) + 0.04 * std::sin(2 * Pi * 124 * t)
+                                           + low * 0.5));
+    }
+    // Slats: a rattle of short metallic ticks, about 14 a second.
+    for (double t = 0.15; t < 3.35; t += 1.0 / 14 + rng->generateDouble() * 0.02) {
+        const int at = int(t * Rate);
+        const double f = 900 + rng->bounded(900);
+        const double amp = 0.10 + rng->generateDouble() * 0.10;
+        for (int i = 0; i < Rate / 40 && at + i < s.size(); ++i) {
+            const double u = double(i) / Rate;
+            s[at + i] += float(amp * std::exp(-160 * u) * (std::sin(2 * Pi * f * u) + 0.5 * noise()));
+        }
+    }
+    // The clunk at the top.
+    const int at = int(3.42 * Rate);
+    for (int i = 0; at + i < s.size(); ++i) {
+        const double u = double(i) / Rate;
+        s[at + i] += float(0.5 * std::exp(-30 * u) * (std::sin(2 * Pi * 85 * u) + 0.4 * noise()));
+    }
+    return s;
+}
+
 } // namespace
 
 SoundBank::SoundBank(QObject *parent) : QObject(parent)
@@ -342,6 +376,7 @@ SoundBank::SoundBank(QObject *parent) : QObject(parent)
         {QStringLiteral("radio-synthwave"), synthwave},
         {QStringLiteral("radio-jazz"), jazz},
         {QStringLiteral("tune"), tune},
+        {QStringLiteral("shutter"), shutter},
     };
     for (const auto &[name, make] : sounds) {
         const QString path = QStringLiteral("%1/%2-v%3.wav").arg(m_dir, name).arg(Version);
