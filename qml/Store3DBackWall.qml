@@ -14,6 +14,7 @@ Node {
         property real rough: 0.6
         property real metal: 0
         source: "#Cube"
+        castsShadows: false // all against the back wall
         materials: PrincipledMaterial { baseColor: color; roughness: rough; metalness: metal }
     }
 
@@ -267,6 +268,12 @@ Node {
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 10; color: "#e3be2a" }
             Text {
                 anchors.centerIn: parent
+                anchors.verticalCenterOffset: -4
+                // Shrinks to fit: the rack is as wide as the shop allows.
+                width: parent.width - 48
+                horizontalAlignment: Text.AlignHCenter
+                fontSizeMode: Text.HorizontalFit
+                minimumPixelSize: 20
                 text: "JUST RETURNED  ·  YOUR LATEST WATCHES"
                 color: "#e3be2a"
                 font.weight: Font.Black

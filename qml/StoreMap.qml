@@ -93,9 +93,9 @@ Popup {
                     model: cat.modelData.units
                     Rectangle {
                         required property var modelData
-                        x: plan.px(modelData.x - 36)
+                        x: plan.px(modelData.x0)
                         y: plan.pz(modelData.z0)
-                        width: Math.max(6, 72 * plan.k)
+                        width: Math.max(3, (modelData.x1 - modelData.x0) * plan.k)
                         height: (modelData.z1 - modelData.z0) * plan.k
                         radius: 2
                         color: cat.modelData.accent

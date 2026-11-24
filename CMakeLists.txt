@@ -51,6 +51,10 @@ qt_add_executable(cinefy
     src/UmbrellaGeometry.h src/UmbrellaGeometry.cpp
     src/SurfaceDetail.h src/SurfaceDetail.cpp
     src/GlowTexture.h src/GlowTexture.cpp
+    src/RoomProbe.h src/RoomProbe.cpp
+    src/LetteringTexture.h src/LetteringTexture.cpp
+    src/ShelvingGeometry.h src/ShelvingGeometry.cpp
+    src/ListInstancing.h src/ListInstancing.cpp
     src/MatchCache.h src/MatchCache.cpp
     src/TmdbClient.h src/TmdbClient.cpp
     src/CachingNetwork.h
@@ -70,6 +74,7 @@ set(CINEFY_QML
     qml/Store3DFacade.qml
     qml/Store3DForecourt.qml
     qml/Store3DBackWall.qml
+    qml/Store3DWallRacks.qml
     qml/PostFx.qml
     qml/Store3DFrontHoldout.qml
     qml/Umbrella.qml

@@ -22,8 +22,10 @@ void MAIN()
         vec3 c = cover(vUv);
         float rim = 1.0 - smoothstep(0.0, 0.04, min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y)));
         BASE_COLOR = vec4(mix(c, c * 0.55, rim * 0.6), 1.0);
-        ROUGHNESS = 0.18;                      // the plastic sleeve
-        SPECULAR_AMOUNT = 0.9;
+        // Glossy plastic sleeve over the print. It's a little wavy, so
+        // the reflections of the ceiling panels aren't perfectly flat.
+        ROUGHNESS = 0.2 + 0.05 * sin(vUv.y * 23.0 + vUv.x * 7.0) * sin(vUv.x * 17.0);
+        SPECULAR_AMOUNT = 0.85;
     } else if (abs(vLocalNormal.x) > 0.5) {   // long sides: printed spine
         float t = p.y;                         // along the spine
         // colour from the matching edge of the cover, a bit deeper

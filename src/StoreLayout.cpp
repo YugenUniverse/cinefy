@@ -24,6 +24,19 @@ float StoreLayout::rowX(int row) const
     return row * RowSpacing - (m_rows - 1) * RowSpacing / 2;
 }
 
+float StoreLayout::wallLevel(int shelf)
+{
+    return 202.0f - 34.0f * float(std::clamp(shelf, 0, WallShelves - 1));
+}
+
+namespace {
+// The two big aisles that go on the side walls.
+bool onWall(const QString &id)
+{
+    return id == QLatin1String("all") || id == QLatin1String("watchlist");
+}
+} // namespace
+
 void StoreLayout::setAisles(const QList<AisleModel *> &aisles, const QSet<int> &staffPicks,
                             const QList<int> &recent)
 {
@@ -32,86 +45,231 @@ void StoreLayout::setAisles(const QList<AisleModel *> &aisles, const QSet<int> &
     m_tapes.clear();
     m_talkers.clear();
 
-    // 1. Cut every aisle into units and place the units in rows.
-    int row = 0;
-    float cursor = 0; // distance from the front of the current row
-    float longest = SectionLen;
+    // 1. Cut every aisle into sides of units. A side holds `perShelf` tapes
+    // on each of its five shelves; units are as long as their fuller side,
+    // so shelves come out full instead of half empty.
+    struct Side {
+        int cat = -1;
+        QVector<int> films;
+    };
+    struct Pending {
+        Side a, b;
+        bool firstA = false, firstB = false;
+    };
+    QVector<Pending> pending;  // gondolas, in order
+    QVector<int> wallCats;     // categories for the side walls
+    QVector<QVector<int>> wallFilms;
+    int lonely = -1;           // index in `pending` of a unit with one free side
     for (AisleModel *a : aisles) {
         const QVector<int> rows = a->sourceRows();
         if (rows.isEmpty())
             continue;
         const int cat = int(m_categories.size());
-        m_categories.push_back({a->id(), a->title(), a->subtitle(), a->accent(), int(rows.size()),
-                                int(m_units.size())});
-
-        const int perUnitMax = 2 * MaxUnitSections * PerSection;
+        m_categories.push_back({a->id(), a->title(), a->subtitle(), a->accent(), int(rows.size()), 0, -1});
+        if (onWall(a->id()) && wallCats.size() < 2) {
+            // The whole catalogue goes on the left (the longer free wall).
+            const bool first = a->id() == QLatin1String("all");
+            wallCats.insert(first ? 0 : wallCats.size(), cat);
+            wallFilms.insert(first ? 0 : wallFilms.size(), rows);
+            continue;
+        }
+        if (rows.size() <= SmallAisle) {
+            // One side of a unit; share the unit with the next small aisle.
+            if (lonely >= 0) {
+                pending[lonely].b = {cat, rows};
+                pending[lonely].firstB = true;
+                lonely = -1;
+            } else {
+                Pending p;
+                p.a = {cat, rows};
+                p.firstA = true;
+                pending << p;
+                lonely = int(pending.size()) - 1;
+            }
+            continue;
+        }
+        const int perUnitMax = 2 * Shelves * MaxPerShelf;
         const int unitCount = int(qCeil(rows.size() / double(perUnitMax)));
         const int perUnit = int(qCeil(rows.size() / double(unitCount)));
         for (int u = 0; u < unitCount; ++u) {
             const QVector<int> films = rows.mid(u * perUnit, perUnit);
-            const int sections = std::clamp(int(qCeil(films.size() / double(2 * PerSection))), 1, MaxUnitSections);
-            const float length = sections * SectionLen;
-            float gap = cursor > 0 ? (u == 0 ? CategoryGap : UnitGap) : 0;
-            if (cursor > 0 && cursor + gap + length > RowMaxLength) {
-                ++row;
-                cursor = 0;
-                gap = 0;
-            }
-            Unit unit{cat, row, -(cursor + gap), -(cursor + gap + length), sections, u == 0};
-            cursor += gap + length;
-            longest = std::max(longest, cursor);
-            const int unitIndex = int(m_units.size());
-            m_units.push_back(unit);
+            const int half = int(qCeil(films.size() / 2.0));
+            Pending p;
+            p.a = {cat, films.mid(0, half)};
+            p.b = {cat, films.mid(half)};
+            p.firstA = p.firstB = u == 0;
+            pending << p;
+        }
+    }
+    // A small aisle left on its own: spread it over both sides.
+    if (lonely >= 0) {
+        Pending &p = pending[lonely];
+        const QVector<int> films = p.a.films;
+        const int half = int(qCeil(films.size() / 2.0));
+        p.a.films = films.mid(0, half);
+        p.b = {p.a.cat, films.mid(half)};
+        p.firstB = true;
+    }
 
-            // Two faces; each fills shelf by shelf across the whole face, and
-            // a part-filled face keeps its tapes around eye level.
-            const int perFaceA = int(qCeil(films.size() / 2.0));
-            for (int side = 0; side < 2; ++side) {
-                const int begin = side == 0 ? 0 : perFaceA;
-                const int count = side == 0 ? perFaceA : int(films.size()) - perFaceA;
-                const int perRow = PerShelf * sections;
-                const int shelvesUsed = std::min(Shelves, int(qCeil(count / double(perRow))));
-                const int firstShelf = (Shelves - shelvesUsed) / 2;
-                for (int j = 0; j < count; ++j) {
-                    Tape t;
-                    t.film = films[begin + j];
-                    t.facing = side == 0 ? -1 : 1;
-                    t.unit = unitIndex;
-                    t.shelf = std::min(Shelves - 1, firstShelf + j / perRow);
-                    const int slot = j % perRow;
-                    t.pos = QVector3D(row, slot, 0); // finished below, once rows are known
-                    m_tapes.push_back(t);
+    // 2. Place the units in rows, front to back.
+    int row = 0;
+    float cursor = 0; // distance from the front of the current row
+    float longest = MinPerShelf * Pitch;
+    QVector<QPair<int, Side>> sides; // (unit, side) to stock, facing = sign below
+    QVector<int> sideFacing;
+    int prevA = -2, prevB = -2;
+    for (const Pending &p : std::as_const(pending)) {
+        const int need = std::max(qCeil(p.a.films.size() / double(Shelves)),
+                                  qCeil(p.b.films.size() / double(Shelves)));
+        const int perShelf = std::clamp(need, MinPerShelf, MaxPerShelf);
+        const float length = perShelf * Pitch + 8; // a little room at the ends
+        const bool sameAisle = p.a.cat == prevA && p.b.cat == prevB;
+        float gap = cursor > 0 ? (sameAisle ? UnitGap : CategoryGap) : 0;
+        if (cursor > 0 && cursor + gap + length > RowMaxLength) {
+            ++row;
+            cursor = 0;
+            gap = 0;
+        }
+        Unit unit;
+        unit.catA = p.a.cat;
+        unit.catB = p.b.cat;
+        unit.row = row;
+        unit.zFront = -(cursor + gap);
+        unit.zBack = -(cursor + gap + length);
+        unit.perShelf = perShelf;
+        unit.firstA = p.firstA;
+        unit.firstB = p.firstB;
+        cursor += gap + length;
+        longest = std::max(longest, cursor);
+        const int index = int(m_units.size());
+        m_units.push_back(unit);
+        sides.push_back({index, p.a});
+        sideFacing << -1;
+        sides.push_back({index, p.b});
+        sideFacing << 1;
+        prevA = p.a.cat;
+        prevB = p.b.cat;
+    }
+    m_rows = std::max(1, row + 1);
+    for (Unit &u : m_units)
+        u.x = rowX(u.row);
+
+    // 3. Stock the gondolas: shelf by shelf from the top; a side that isn't
+    // full keeps its tapes around eye level, and a part-filled last shelf
+    // is centred. Shelves are angled: tapes lean back against the unit.
+    for (int k = 0; k < sides.size(); ++k) {
+        const Unit &u = m_units[sides[k].first];
+        const QVector<int> &films = sides[k].second.films;
+        const int facing = sideFacing[k];
+        const int count = int(films.size());
+        const int perRow = u.perShelf;
+        const int shelvesUsed = std::min(Shelves, int(qCeil(count / double(perRow))));
+        const int firstShelf = (Shelves - shelvesUsed) / 2;
+        for (int j = 0; j < count; ++j) {
+            Tape t;
+            t.film = films[j];
+            t.facing = facing;
+            t.unit = sides[k].first;
+            const int line = j / perRow;
+            t.shelf = std::min(Shelves - 1, firstShelf + line);
+            const int onLine = std::min(perRow, count - line * perRow);
+            const float slot = (perRow - onLine) / 2.0f + j % perRow + 0.5f;
+            const float span = u.zFront - u.zBack;
+            const float z0 = (span - perRow * Pitch) / 2;
+            const float z = facing < 0 ? u.zBack + z0 + slot * Pitch : u.zFront - z0 - slot * Pitch;
+            // Leaning back on the stepped wire shelf, its foot against the lip.
+            t.lean = -17.0f;
+            t.pos = QVector3D(u.x + facing * (stepFront(t.shelf) - 7.5f), shelfLevel(t.shelf) + TapeH / 2 + 0.6f, z);
+            m_tapes.push_back(t);
+        }
+    }
+    // Where each aisle starts: its first unit, and which side of it.
+    {
+        QVector<bool> found(m_categories.size(), false);
+        for (int i = 0; i < m_units.size(); ++i) {
+            for (int facing : {-1, 1}) {
+                const int c = m_units[i].category(facing);
+                if (c >= 0 && !found[c]) {
+                    found[c] = true;
+                    m_categories[c].firstUnit = i;
+                    m_categories[c].firstFacing = facing;
                 }
             }
         }
-    }
-    m_rows = std::max(1, row + 1);
-
-    // 2. Now the store's size is known: final tape positions.
-    for (Tape &t : m_tapes) {
-        const Unit &u = m_units[t.unit];
-        const float slot = t.pos.y() + 0.5f;
-        const float z = t.facing < 0 ? u.zBack + slot * Pitch : u.zFront - slot * Pitch;
-        t.pos = QVector3D(rowX(u.row) + t.facing * TapeInset, shelfLevel(t.shelf) + TapeH / 2 + 0.6f, z);
-    }
-
-    // 3. Handwritten cards under staff picks (first copy of each film only).
-    QSet<int> carded;
-    for (const Tape &t : std::as_const(m_tapes)) {
-        if (t.unit < 0 || !staffPicks.contains(t.film) || carded.contains(t.film) || m_talkers.size() >= 60)
-            continue;
-        carded.insert(t.film);
-        m_talkers << QVariantMap{
-            {QStringLiteral("film"), t.film},
-            {QStringLiteral("position"),
-             QVector3D(rowX(m_units[t.unit].row) + t.facing * (HalfDepth + 0.8f), shelfLevel(t.shelf) - 8, t.pos.z())},
-            {QStringLiteral("yaw"), t.facing > 0 ? 90.0 : -90.0},
-        };
     }
 
     m_halfWidth = (m_rows - 1) * RowSpacing / 2 + HalfDepth + SideAisle;
     m_backZ = -longest - BackAisle;
     m_frontZ = FrontArea;
+
+    // 4. The side walls: the whole back catalogue on the left, reading from
+    // the front of the shop backwards; the watchlist on the right, from the
+    // back corner up to before the candy rack. 1 m bays, filled top to bottom.
+    {
+        const int perBay = BayWidth * WallShelves;
+        auto lengthFor = [perBay](int n) { return float(qCeil(n / double(perBay)) * BayWidth) * Pitch; };
+        const float leftFront = m_frontZ - 150, rightLimit = m_frontZ - 820;
+        if (!wallCats.isEmpty())
+            m_backZ = std::min(m_backZ, leftFront - lengthFor(int(wallFilms[0].size())) - 60);
+        if (wallCats.size() > 1)
+            m_backZ = std::min(m_backZ, rightLimit - lengthFor(int(wallFilms[1].size())) - 150);
+        for (int w = 0; w < wallCats.size(); ++w) {
+            const int side = w == 0 ? -1 : 1; // which wall
+            const int facing = -side;
+            const QVector<int> &films = wallFilms[w];
+            const float len = lengthFor(int(films.size()));
+            Unit u;
+            u.wall = side;
+            u.row = -1;
+            u.x = side * m_halfWidth;
+            if (side < 0) {
+                u.zFront = leftFront;
+                u.zBack = leftFront - len;
+            } else {
+                u.zBack = m_backZ + 150;
+                u.zFront = u.zBack + len;
+            }
+            u.perShelf = int(len / Pitch);
+            (facing < 0 ? u.catA : u.catB) = wallCats[w];
+            (facing < 0 ? u.firstA : u.firstB) = true;
+            const int index = int(m_units.size());
+            m_units.push_back(u);
+            m_categories[wallCats[w]].firstUnit = index;
+            m_categories[wallCats[w]].firstFacing = facing;
+            const float lift = (WallDepth - 14.0f - 22.0f) * std::tan(qDegreesToRadians(ShelfTilt));
+            for (int j = 0; j < films.size(); ++j) {
+                Tape t;
+                t.film = films[j];
+                t.facing = facing;
+                t.unit = index;
+                const int bay = j / perBay, k = j % perBay;
+                t.shelf = k / BayWidth;
+                const float slot = bay * BayWidth + k % BayWidth + 0.5f;
+                // Reading order: left to right as you face the wall.
+                const float z = side < 0 ? u.zFront - slot * Pitch : u.zBack + slot * Pitch;
+                t.lean = -11.0f;
+                t.pos = QVector3D(u.x + facing * (WallDepth - 15.5f), wallLevel(t.shelf) + TapeH / 2 + 0.6f + lift, z);
+                m_tapes.push_back(t);
+            }
+        }
+    }
+
+    // 5. Handwritten cards under staff picks (first copy of each film only).
+    QSet<int> carded;
+    for (const Tape &t : std::as_const(m_tapes)) {
+        if (t.unit < 0 || !staffPicks.contains(t.film) || carded.contains(t.film) || m_talkers.size() >= 60)
+            continue;
+        const Unit &u = m_units[t.unit];
+        carded.insert(t.film);
+        const float level = u.wall ? wallLevel(t.shelf) : shelfLevel(t.shelf);
+        const float front = u.wall ? u.depth() : stepFront(t.shelf);
+        m_talkers << QVariantMap{
+            {QStringLiteral("film"), t.film},
+            {QStringLiteral("position"), QVector3D(u.x + t.facing * (front + 1.2f), level - 8, t.pos.z())},
+            {QStringLiteral("yaw"), t.facing > 0 ? 90.0 : -90.0},
+        };
+    }
+
     buildFrontOfStore();
 
     // Your latest watches, just returned: a stack on the counter, newest on
@@ -181,8 +339,12 @@ void StoreLayout::setAisles(const QList<AisleModel *> &aisles, const QSet<int> &
 void StoreLayout::buildFrontOfStore()
 {
     m_obstacles.clear();
-    for (const Unit &u : std::as_const(m_units))
-        m_obstacles << QRectF(rowX(u.row) - HalfDepth - 4, u.zBack - 6, 2 * HalfDepth + 8, unitLength(u) + 12);
+    for (const Unit &u : std::as_const(m_units)) {
+        if (u.wall) // against the wall, sticking out WallDepth
+            m_obstacles << QRectF(u.wall < 0 ? u.x : u.x - WallDepth - 4, u.zBack - 4, WallDepth + 4, unitLength(u) + 8);
+        else
+            m_obstacles << QRectF(u.x - HalfDepth - 4, u.zBack - 6, 2 * HalfDepth + 8, unitLength(u) + 12);
+    }
 
     // The counter by the right wall, the candy rack in front of it, the
     // return bin just inside the door.
@@ -204,17 +366,40 @@ QString StoreLayout::signature() const
 {
     QString s = QStringLiteral("%1/%2/%3").arg(m_halfWidth).arg(m_frontZ).arg(m_backZ);
     for (const Unit &u : m_units)
-        s += QStringLiteral(";%1,%2,%3").arg(u.row).arg(u.zFront).arg(u.sections);
+        s += QStringLiteral(";%1,%2,%3,%4").arg(u.x).arg(u.zFront).arg(u.zBack).arg(u.wall);
     return QString::number(qHash(s), 16);
 }
 
 QVariantList StoreLayout::gondolas() const
 {
     QVariantList out;
-    for (const Unit &u : m_units)
-        out << QVariantMap{{QStringLiteral("x"), rowX(u.row)},
+    for (const Unit &u : m_units) {
+        if (u.wall)
+            continue;
+        out << QVariantMap{{QStringLiteral("x"), u.x},
                            {QStringLiteral("z"), (u.zFront + u.zBack) / 2},
                            {QStringLiteral("length"), unitLength(u)}};
+    }
+    return out;
+}
+
+QVariantList StoreLayout::wallRacks() const
+{
+    QVariantList out;
+    for (const Unit &u : m_units) {
+        if (!u.wall)
+            continue;
+        const int facing = -u.wall;
+        const Category &c = m_categories[u.category(facing)];
+        out << QVariantMap{{QStringLiteral("x"), u.x},
+                           {QStringLiteral("side"), u.wall},
+                           {QStringLiteral("z0"), u.zBack},
+                           {QStringLiteral("z1"), u.zFront},
+                           {QStringLiteral("bays"), int(std::lround(unitLength(u) / (BayWidth * Pitch)))},
+                           {QStringLiteral("depth"), WallDepth},
+                           {QStringLiteral("title"), c.title},
+                           {QStringLiteral("accent"), c.accent}};
+    }
     return out;
 }
 
@@ -222,16 +407,20 @@ QVariantList StoreLayout::signs() const
 {
     QVariantList out;
     for (const Unit &u : m_units) {
-        const Category &c = m_categories[u.category];
+        if (u.wall)
+            continue;
         for (int facing : {-1, 1}) {
+            if (u.category(facing) < 0)
+                continue;
+            const Category &c = m_categories[u.category(facing)];
             out << QVariantMap{
-                {QStringLiteral("x"), rowX(u.row) + facing * (HalfDepth + 1.5f)},
+                {QStringLiteral("x"), u.x + facing * 5.5f}, // on top of the spine
                 {QStringLiteral("z"), (u.zFront + u.zBack) / 2},
                 {QStringLiteral("yaw"), facing > 0 ? 90.0 : -90.0},
                 {QStringLiteral("width"), unitLength(u) - 8},
                 {QStringLiteral("title"), c.title},
                 {QStringLiteral("accent"), c.accent},
-                {QStringLiteral("first"), u.first},
+                {QStringLiteral("first"), u.first(facing)},
             };
         }
     }
@@ -243,10 +432,14 @@ QVariantList StoreLayout::endSigns() const
     // Both ends of every unit say which aisle it is.
     QVariantList out;
     for (const Unit &u : m_units) {
-        const Category &c = m_categories[u.category];
+        if (u.wall)
+            continue;
         for (int end : {1, -1}) {
-            out << QVariantMap{{QStringLiteral("x"), rowX(u.row)},
-                               {QStringLiteral("z"), end > 0 ? u.zFront + 6 : u.zBack - 6},
+            // A shared unit: each end names one of its two aisles.
+            const int ci = u.category(end > 0 ? -1 : 1) >= 0 ? u.category(end > 0 ? -1 : 1) : u.category(end > 0 ? 1 : -1);
+            const Category &c = m_categories[ci];
+            out << QVariantMap{{QStringLiteral("x"), u.x},
+                               {QStringLiteral("z"), end > 0 ? u.zFront + 2.5f : u.zBack - 2.5f},
                                {QStringLiteral("yaw"), end > 0 ? 0.0 : 180.0},
                                {QStringLiteral("title"), c.title},
                                {QStringLiteral("count"), c.count},
@@ -261,12 +454,17 @@ QVariantList StoreLayout::categories() const
     QVariantList out;
     for (int i = 0; i < m_categories.size(); ++i) {
         const Category &c = m_categories[i];
-        QVariantList units;
+        QVariantList units; // the sides of units it's on, as plan rectangles
         for (const Unit &u : m_units) {
-            if (u.category == i)
-                units << QVariantMap{{QStringLiteral("x"), rowX(u.row)},
+            for (int facing : {-1, 1}) {
+                if (u.category(facing) != i)
+                    continue;
+                const float a = u.x, b = u.x + facing * u.depth();
+                units << QVariantMap{{QStringLiteral("x0"), std::min(a, b)},
+                                     {QStringLiteral("x1"), std::max(a, b)},
                                      {QStringLiteral("z0"), u.zBack},
                                      {QStringLiteral("z1"), u.zFront}};
+            }
         }
         out << QVariantMap{{QStringLiteral("id"), c.id},
                            {QStringLiteral("title"), c.title},
@@ -308,7 +506,21 @@ int StoreLayout::pick(const QVector3D &origin, const QVector3D &dir, float maxDi
     // end panels and the plinth stop the aim, so you can't pick a tape on
     // the far side of a unit (or on a shelf behind it).
     for (const Unit &u : m_units) {
-        const float x = rowX(u.row);
+        const float x = u.x;
+        if (u.wall) { // the rack's back panel and end panels
+            const float inner = x - u.wall * WallDepth;
+            const QVector3D boxes[3][2] = {
+                {{std::min(x, x - u.wall * 6), 0, u.zBack}, {std::max(x, x - u.wall * 6), 240, u.zFront}},
+                {{std::min(x, inner), 0, u.zBack - 4}, {std::max(x, inner), 240, u.zBack + 1}},
+                {{std::min(x, inner), 0, u.zFront - 1}, {std::max(x, inner), 240, u.zFront + 4}},
+            };
+            for (const auto &b : boxes) {
+                const float t = rayBox(origin, dir, b[0], b[1], bestT);
+                if (t >= 0 && t < bestT)
+                    bestT = t;
+            }
+            continue;
+        }
         const QVector3D boxes[3][2] = {
             {{x - 4, 0, u.zBack}, {x + 4, 205, u.zFront}},                          // pegboard spine
             {{x - HalfDepth, 0, u.zBack - 4}, {x + HalfDepth, 210, u.zBack + 1}},    // end panels
@@ -325,6 +537,8 @@ int StoreLayout::pick(const QVector3D &origin, const QVector3D &dir, float maxDi
         QVector3D half = standing;
         if (m_tapes[i].facing == 0 && !m_tapes[i].lying) // facing the front (wall rack)
             half = QVector3D(TapeW / 2, TapeH / 2, TapeD / 2 + 1.0f);
+        else if (m_tapes[i].lean < -14) // leaning well back: deeper box
+            half = QVector3D(5.5f, TapeH / 2, TapeW / 2);
         if (m_tapes[i].lying) { // box around the rotated tape
             const float c = std::abs(std::cos(qDegreesToRadians(m_tapes[i].yaw)));
             const float s = std::abs(std::sin(qDegreesToRadians(m_tapes[i].yaw)));
@@ -513,8 +727,14 @@ QVariantMap StoreLayout::viewCategory(int category) const
 {
     if (category < 0 || category >= m_categories.size())
         return {};
-    const Unit &u = m_units[m_categories[category].firstUnit];
-    return standInFront(rowX(u.row) - HalfDepth, -1, (u.zFront + u.zBack) / 2, 110, 170);
+    const Category &c = m_categories[category];
+    if (c.firstUnit < 0 || c.firstUnit >= m_units.size())
+        return {};
+    const Unit &u = m_units[c.firstUnit];
+    const int facing = c.firstFacing;
+    // A long wall rack: stand at its start, where the A's are.
+    const float z = u.wall < 0 ? u.zFront - 100 : u.wall > 0 ? u.zBack + 100 : (u.zFront + u.zBack) / 2;
+    return standInFront(u.x + facing * u.depth(), facing, z, 110, 170);
 }
 
 QVariantMap StoreLayout::viewAisle(const QString &id) const
@@ -532,7 +752,8 @@ QVariantMap StoreLayout::viewFilm(int film) const
         const Tape &t = m_tapes[i];
         if (t.film != film || t.unit < 0)
             continue;
-        QVariantMap v = standInFront(rowX(m_units[t.unit].row) + t.facing * HalfDepth, t.facing,
+        const Unit &u = m_units[t.unit];
+        QVariantMap v = standInFront(u.x + t.facing * u.depth(), t.facing,
                                      t.pos.z(), t.pos.y(), 95);
         v.insert(QStringLiteral("tape"), i);
         return v;
@@ -545,19 +766,23 @@ QString StoreLayout::aisleAt(float x, float z) const
     if (z > m_frontZ)
         return QStringLiteral("Outside · walk through the door");
     // The unit face you're standing in front of.
-    int best = -1;
+    int best = -1, bestFacing = -1;
     float bestDist = 260;
     for (int i = 0; i < m_units.size(); ++i) {
         const Unit &u = m_units[i];
         if (z < u.zBack - 40 || z > u.zFront + 40)
             continue;
-        const float d = std::abs(x - rowX(u.row)) - HalfDepth;
+        const int facing = u.wall ? -u.wall : (x < u.x ? -1 : 1);
+        if (u.category(facing) < 0 || (u.wall && (x - u.x) * facing < 0))
+            continue;
+        const float d = std::abs(x - u.x) - u.depth();
         if (d < bestDist) {
             bestDist = d;
             best = i;
+            bestFacing = facing;
         }
     }
     if (best >= 0)
-        return m_categories[m_units[best].category].title;
+        return m_categories[m_units[best].category(bestFacing)].title;
     return z > 0 ? QStringLiteral("Front of the store") : QStringLiteral("Shop floor");
 }

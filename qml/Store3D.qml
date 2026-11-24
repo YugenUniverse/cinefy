@@ -20,7 +20,8 @@ Item {
         if (clerkDialog.visible) open.push("clerk")
         if (vhsCase.visible) open.push("case")
         if (reading) open.push("diary")
-        return open.length ? open.join("+") : "none"
+        return (open.length ? open.join("+") : "none")
+               + " [room " + Math.round(store.halfWidth) + " x " + Math.round(store.backZ) + ".." + Math.round(store.frontZ) + "]"
     }
 
     readonly property var store: shop.store
@@ -128,6 +129,8 @@ Item {
     }
 
     Component.onCompleted: {
+        if (devPerf)
+            console.info(`perf: 3D shop created at ${Date.now() - devT0} ms`)
         Qt.callLater(capture)
         if (devBake)
             bakeTimer.start()
@@ -229,6 +232,13 @@ Item {
 
     // ---------------------------------------------------------------- sound
     // 0 deep inside the shop .. 1 out on the street.
+    // Inside, facing the back of the shop, no part of the shop front (its
+    // windows, its door) is in view: then the street and its rain aren't
+    // rendered at all. `heading` is 0 when facing straight back (-Z).
+    readonly property real heading: { let h = ((player.yaw % 360) + 360) % 360; return h > 180 ? h - 360 : h }
+    readonly property real halfFovH: Math.atan(Math.tan(33 * Math.PI / 180) * width / Math.max(1, height)) * 180 / Math.PI
+    readonly property bool streetVisible: outdoors > 0 || player.z > store.frontZ - 60 || travel.running
+                                          || Math.abs(heading) > 90 - halfFovH - 12
     readonly property real outdoors: Math.max(0, Math.min(1, (player.z - store.frontZ + 60) / 200))
     // Inside, the rain is louder near the door.
     readonly property real nearDoor: Math.max(0, 1 - Math.hypot(player.x, store.frontZ - player.z) / 900)
@@ -321,6 +331,28 @@ Item {
         onTriggered: root.location = store.aisleAt(player.x, player.z)
     }
 
+    // Dev aid (CINEFY_PERF=1): timings of each 3D layer every 2 s.
+    Timer {
+        interval: 2000
+        running: devPerf
+        repeat: true
+        onTriggered: {
+            for (const [name, v] of [["city", cityView], ["shop", shopView], ["rain", rainView]]) {
+                const r = v.renderStats
+                r.extendedDataCollectionEnabled = true
+                console.info(`perf: ${name.padEnd(4)} cpu ${r.renderPrepareTime.toFixed(2)}+${r.renderTime.toFixed(2)} ms`
+                             + ` sync ${r.syncTime.toFixed(2)} gpu ${r.lastCompletedGpuTime.toFixed(2)} ms`
+                             + ` draws ${r.drawCallCount} verts ${r.drawVertexCount} passes ${r.renderPassCount}`
+                             + ` tex ${(r.imageDataSize / 1048576).toFixed(0)}MB`)
+                if (r.materialGenerationTime + r.pipelineCreationTime + r.effectGenerationTime > 0)
+                    console.info(`perf: ${name} startup: materials ${r.materialGenerationTime} ms, effects ${r.effectGenerationTime} ms,`
+                                 + ` pipelines ${r.pipelineCreationTime} ms (${r.pipelineCount} pipelines)`)
+                if (devOff.indexOf("details") >= 0)
+                    console.info(`perf: ${name} passes:\n${r.renderPassDetails}`)
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- scene
     // Two layers with the same camera. Underneath: the city, always drawn as
     // ASCII. On top: the shop itself, drawn normally, with a transparent
@@ -331,6 +363,9 @@ Item {
         eulerRotation: Qt.vector3d(player.pitch, player.yaw, 0)
         fieldOfView: 66
         clipNear: 5
+        // Skip everything outside the view (Qt draws it all by default): half
+        // the shop is behind you at any moment.
+        frustumCullingEnabled: !root.off("culling")
         clipFar: 20000
     }
 
@@ -340,11 +375,18 @@ Item {
         id: world
         anchors.fill: parent
         visible: !ApplicationWindow.window || !ApplicationWindow.window.closing
-        layer.enabled: root.quality >= 1
+        layer.enabled: root.quality >= 1 && !root.off("postfx")
+        // The 3D layers are rendered at renderScale anyway: grade them at that
+        // size too, instead of at the full window size.
+        layer.textureSize: root.renderScale < 1
+                           ? Qt.size(Math.round(width * Screen.devicePixelRatio * root.renderScale),
+                                     Math.round(height * Screen.devicePixelRatio * root.renderScale))
+                           : Qt.size(0, 0)
         layer.effect: PostFx { bloomStrength: root.quality >= 2 ? 0.8 : 0.65 }
 
     View3D {
         id: cityView
+        visible: !root.off("city") && root.streetVisible
         anchors.fill: parent
         explicitTextureWidth: root.texW(cityView)
         explicitTextureHeight: root.texH(cityView)
@@ -362,7 +404,7 @@ Item {
                 depthNear: 1200
                 depthFar: 7500
             }
-            effects: devNoAscii ? [] : [asciiEffect]
+            effects: devNoAscii || root.off("ascii") ? [] : [asciiEffect]
         }
 
         Effect {
@@ -429,10 +471,25 @@ Item {
             // frame on integrated GPUs: only on High.
             antialiasingMode: root.quality >= 2 ? SceneEnvironment.MSAA : SceneEnvironment.NoAA
             antialiasingQuality: SceneEnvironment.Medium
+            // No sparkling highlights on glossy tape sleeves and shelf edges.
+            specularAAEnabled: root.quality >= 1 && !root.off("specaa")
             tonemapMode: SceneEnvironment.TonemapModeFilmic
-            aoStrength: root.quality >= 2 ? 30 : 0
-            aoDistance: 40
-            aoSoftness: 40
+            // The room itself lights the room: soft fill and reflections from
+            // a bright panorama of the shop (ceiling panels, yellow walls,
+            // blue carpet). Dimmed when you're outside in the night.
+            lightProbe: root.off("probe") ? null : roomProbe
+            Texture { id: roomProbe; textureData: RoomProbe {} }
+            probeExposure: 1.35 - 1.0 * root.outdoors
+            // Contact shadows where shelves meet the floor and tapes meet
+            // the shelves: a big part of what makes it read as real.
+            // Depth first, then shade only what's in front: looking down an
+            // aisle, tapes, wire and slatwall of many units overlap.
+            depthPrePassEnabled: !root.off("noprepass")
+            aoEnabled: root.quality >= 1 && !root.off("ao")
+            aoStrength: root.quality >= 1 ? 55 : 0
+            aoDistance: 28
+            aoSoftness: 35
+            aoSampleRate: root.quality >= 2 ? 4 : 2
             // (No bloom: post effects break this layer's transparency.)
             lightmapper: Lightmapper {
                 id: lightmapper
@@ -460,10 +517,11 @@ Item {
         // between them. No coloured lights indoors.
         DirectionalLight {
             eulerRotation: Qt.vector3d(-90, 0, 0)
-            brightness: 0.3
+            brightness: 0.45
             color: "#f4f6ff"
-            ambientColor: "#32353c"
-            castsShadow: root.quality >= 1
+            ambientColor: "#101114"
+            castsShadow: root.quality >= 1 && !root.off("shadows")
+            softShadowQuality: root.off("pcf") ? Light.Hard : Light.PCF4
             bakeMode: root.bake ? Light.BakeModeIndirect : Light.BakeModeDisabled
             shadowMapQuality: Light.ShadowMapQualityMedium
             shadowFactor: 30
@@ -473,6 +531,7 @@ Item {
             model: 6
             PointLight {
                 required property int index
+                visible: !root.off("inlights")
                 // snapped to the troffer grid in Store3DInterior (300 cm, from the back-left corner)
                 readonly property real wx: -store.halfWidth + 150 + Math.round((store.halfWidth * (index % 2 === 0 ? 0.55 : 1.45) - 150) / 300) * 300
                 readonly property real wz: store.backZ + 150 + Math.round(((store.frontZ - store.backZ) * (0.16 + Math.floor(index / 2) * 0.3) - 150) / 300) * 300
@@ -490,7 +549,7 @@ Item {
         // street (same spacing as Store3DStreet), and downlights in the
         // shop's canopy.
         Repeater3D {
-            model: root.nearLamps
+            model: root.off("outlights") ? [] : root.nearLamps
             PointLight {
                 required property var modelData
                 position: Qt.vector3d(modelData, 455, store.frontZ + 360)
@@ -502,7 +561,7 @@ Item {
             }
         }
         Repeater3D { // canopy downlights: bright pools on the wet pavement
-            model: 4
+            model: root.off("outlights") ? 0 : 4
             SpotLight {
                 required property int index
                 position: Qt.vector3d((index - 1.5) * (store.halfWidth * 0.55), 266, store.frontZ + 50)
@@ -528,12 +587,14 @@ Item {
         MembershipCard3D { position: root.cardPos; lit: root.aimCard }
         Store3DBackWall { }
         Store3DInterior {
+            visible: !root.off("interior")
             detail: root.quality >= 1
-            lightPools: root.quality >= 1 ? 1 : 0
+            lightPools: root.quality >= 1 && !root.off("pools") ? 1 : 0
             radioStation: root.radioStation
             bake: root.bake
         }
-        Store3DFacade { doorOpen: root.doorOpen }
+        Store3DWallRacks { bake: root.bake; visible: !root.off("racks") }
+        Store3DFacade { doorOpen: root.doorOpen; visible: !root.off("facade") }
         // Street shapes, invisible, so they hide the shop when they stand in
         // front of it. From inside nothing on the street can, so skip them.
         Store3DStreet { holdout: true; visible: root.outdoors > 0.01 }
@@ -545,6 +606,7 @@ Item {
             atlas: atlas
         }
         Model {
+            visible: !root.off("tapes")
             source: "#Cube"
             instancing: tapeInstances
             materials: CustomMaterial {
@@ -596,13 +658,15 @@ Item {
     // the ASCII city.
     View3D {
         id: rainView
+        visible: !root.off("rain") && (root.streetVisible || root.reading || root.diaryRaise > 0 || umbrella.visible)
         anchors.fill: parent
         explicitTextureWidth: root.texW(rainView)
         explicitTextureHeight: root.texH(rainView)
         camera: rainCamera
         environment: SceneEnvironment {
             backgroundMode: SceneEnvironment.Transparent
-            antialiasingMode: root.quality >= 1 ? SceneEnvironment.MSAA : SceneEnvironment.NoAA
+            // Thin rain streaks and the umbrella's edge: only worth it on High.
+            antialiasingMode: root.quality >= 2 ? SceneEnvironment.MSAA : SceneEnvironment.NoAA
             antialiasingQuality: SceneEnvironment.Medium
         }
         PlayerCamera {
@@ -706,7 +770,9 @@ Item {
     property real volume: Number(shop.pref("volume", 1))
     property real sensitivity: Number(shop.pref("sensitivity", 0.14))
     // Graphics quality: 0 low, 1 medium (default), 2 high.
-    property int quality: Number(shop.pref("quality", 1))
+    // Dev aid: features switched off with CINEFY_OFF (see main.cpp).
+    function off(feature) { return devOff !== "" && devOff.split(",").indexOf(feature) >= 0 }
+    property int quality: devQuality >= 0 ? devQuality : Number(shop.pref("quality", 1))
     onQualityChanged: shop.setPref("quality", quality)
     // The 3D is drawn at a fraction of the window's pixels and scaled up:
     // the single biggest saving on laptop GPUs. Menus and text stay sharp.

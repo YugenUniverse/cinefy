@@ -5,6 +5,8 @@ import QtQuick3D
 // shelving units with aisle signs, and the counter with its TV.
 Node {
     id: interior
+    // Dev aid: parts switched off with CINEFY_OFF (see main.cpp).
+    function off(part) { return devOff !== "" && devOff.split(",").indexOf(part) >= 0 }
     readonly property var store: shop.store
     readonly property real w: store.halfWidth * 2
     readonly property real depth: store.frontZ - store.backZ
@@ -96,8 +98,8 @@ Node {
         scaleU: interior.w / 260
         scaleV: Math.max(1, -store.backZ) / 260
         sourceItem: Grime {
-            base: "#3f4656"
-            tones: ["#353b49", "#4c5466", "#2f3542", "#565e70", "#33415f"]
+            base: "#2a468e"
+            tones: ["#233c7a", "#31519e", "#1f3570", "#3a5aa8", "#2b4386"]
             specks: 14000
             seed: 7
         }
@@ -145,8 +147,8 @@ Node {
         tilingModeVertical: Texture.ClampToEdge
         scaleU: 4
         sourceItem: Grime {
-            base: "#dcd7c9"
-            tones: ["#cbc5b5", "#e4e0d5", "#bdb6a3", "#d2ccb9"]
+            base: "#e8b62c"
+            tones: ["#dfad26", "#efc040", "#d6a420", "#e4b335"]
             specks: 6000
             seed: 19
             extra: function(ctx, rnd) {
@@ -178,13 +180,21 @@ Node {
         scaleU: interior.w / 240
         scaleV: interior.depth / 240
         sourceItem: Grime {
-            base: "#e2dfd6"
-            tones: ["#d4d0c5", "#ece9e1", "#c9c4b8"]
+            base: "#efeee9"
+            tones: ["#e4e2dc", "#f6f5f1", "#dcd9d1"]
             specks: 9000
             seed: 23
             extra: function(ctx, rnd) {
+                // Fissures and pinholes of mineral-fibre tiles.
+                ctx.strokeStyle = "#a9a69d"
+                ctx.lineWidth = 1
+                for (let i = 0; i < 900; ++i) {
+                    ctx.globalAlpha = 0.25 + rnd() * 0.35
+                    const x = rnd() * 512, y = rnd() * 512, a = rnd() * Math.PI, l = 2 + rnd() * 6
+                    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); ctx.stroke()
+                }
                 ctx.globalAlpha = 1
-                ctx.fillStyle = "#9b978d"
+                ctx.fillStyle = "#c4c2bb"
                 for (let i = 0; i <= 4; ++i) {
                     ctx.fillRect(i * 128 - 2, 0, 4, 512)
                     ctx.fillRect(0, i * 128 - 2, 512, 4)
@@ -192,7 +202,7 @@ Node {
                 for (let i = 0; i < 3; ++i) {
                     const x = Math.floor(rnd() * 4) * 128 + 20, y = Math.floor(rnd() * 4) * 128 + 20
                     const g = ctx.createRadialGradient(x + 40, y + 40, 5, x + 40, y + 40, 50)
-                    g.addColorStop(0, "rgba(160,120,50,0.35)")
+                    g.addColorStop(0, "rgba(160,120,50,0.12)")
                     g.addColorStop(1, "rgba(160,120,50,0)")
                     ctx.fillStyle = g
                     ctx.fillRect(x - 20, y - 20, 120, 120)
@@ -226,21 +236,94 @@ Node {
         eulerRotation.x: 90
         scale: Qt.vector3d(interior.w / 100, interior.depth / 100, 1)
         castsShadows: false
-        materials: PrincipledMaterial { baseColorMap: ceilingTex; roughness: 0.95; normalMap: interior.detail ? ceilingBump : null; normalStrength: 0.7 }
+        // The light the floor, shelves and walls bounce back up keeps a
+        // real shop's ceiling bright between the panels.
+        materials: PrincipledMaterial {
+            baseColorMap: ceilingTex
+            roughness: 0.95
+            normalMap: interior.detail ? ceilingBump : null
+            normalStrength: 0.7
+            emissiveMap: ceilingTex
+            emissiveFactor: Qt.vector3d(0.22, 0.22, 0.22)
+        }
     }
-    // Fluorescent troffers. Not every tube is in good shape.
-    Repeater3D {
-        model: Math.max(1, Math.floor(interior.w / 300)) * Math.max(1, Math.floor(interior.depth / 300))
-        Node {
+    // Fluorescent troffers. Not every tube is in good shape. They're drawn
+    // instanced: one draw per part for the whole ceiling (frames, the
+    // diffusers in three brightnesses, halos, floor pools), plus the one
+    // tired tube that flickers, which is a normal model.
+    readonly property int trofferCols: Math.max(1, Math.floor(interior.w / 300))
+    readonly property int trofferRows: Math.max(1, Math.floor(interior.depth / 300))
+    readonly property int flickerIndex: 9
+    function trofferGlow(i) { return i % 11 === 4 ? 0.12 : i % 7 === 2 ? 0.75 : 1 }
+    function trofferPos(i, y) {
+        return Qt.vector3d(-interior.w / 2 + 150 + (i % trofferCols) * 300, y,
+                           store.backZ + 150 + Math.floor(i / trofferCols) * 300)
+    }
+    // Entries for one part: `glow` picks the diffusers of one brightness
+    // (undefined: all), the flickering tube is always left out.
+    function trofferEntries(y, scale, rot, glow, alpha) {
+        const out = []
+        for (let i = 0; i < trofferCols * trofferRows; ++i) {
+            if (i === flickerIndex || (glow !== undefined && trofferGlow(i) !== glow))
+                continue
+            const e = { p: trofferPos(i, y), s: scale, r: rot }
+            if (alpha)
+                e.c = Qt.rgba(1, 1, 1, trofferGlow(i))
+            out.push(e)
+        }
+        return out
+    }
+    Node {
+        visible: !interior.off("troffers")
+        Model { // metal frames
+            source: "#Cube"
+            castsShadows: false
+            receivesShadows: false
+            instancing: ListInstancing {
+                entries: interior.trofferEntries(interior.ceiling - 1, Qt.vector3d(1.28, 0.02, 0.68), Qt.vector3d(0, 0, 0))
+            }
+            materials: PrincipledMaterial { baseColor: "#b9b7b0"; metalness: 0.5; roughness: 0.4 }
+        }
+        Repeater3D { // diffusers, brighter than white so they bloom like real tubes
+            model: [1, 0.75, 0.12]
+            Model {
+                required property real modelData
+                source: "#Rectangle"
+                castsShadows: false
+                receivesShadows: false
+                instancing: ListInstancing {
+                    entries: interior.trofferEntries(interior.ceiling - 2.2, Qt.vector3d(1.2, 0.6, 1), Qt.vector3d(90, 0, 0), modelData)
+                }
+                materials: PrincipledMaterial {
+                    baseColor: "#f4f6f8"
+                    roughness: 0.4
+                    emissiveFactor: Qt.vector3d(2.6 * modelData, 2.7 * modelData, 2.8 * modelData)
+                }
+            }
+        }
+        LightQuad { // halos on the ceiling round the panels
+            visible: interior.lightPools > 0
+            tint: "#eef3ff"
+            strength: 0.9 * interior.lightPools
+            instancing: ListInstancing {
+                entries: interior.trofferEntries(interior.ceiling - 2.6, Qt.vector3d(2.6, 1.7, 1), Qt.vector3d(90, 0, 0), undefined, true)
+            }
+        }
+        LightQuad { // pools of light on the floor below
+            visible: interior.lightPools > 0
+            tint: "#fff7e8"
+            strength: 0.18 * interior.lightPools
+            instancing: ListInstancing {
+                entries: interior.trofferEntries(0.6, Qt.vector3d(3.4, 2.6, 1), Qt.vector3d(-90, 0, 0), undefined, true)
+            }
+        }
+        Node { // the tired tube
             id: troffer
-            required property int index
-            readonly property int cols: Math.max(1, Math.floor(interior.w / 300))
-            readonly property bool flickers: index === 9 // one tired tube
-            readonly property real baseGlow: index % 11 === 4 ? 0.12 : index % 7 === 2 ? 0.75 : 1
             property real flick: 1
-            readonly property real glow: baseGlow * flick
+            readonly property real glow: interior.trofferGlow(interior.flickerIndex) * flick
+            visible: interior.trofferCols * interior.trofferRows > interior.flickerIndex
             SequentialAnimation on flick {
-                running: troffer.flickers
+                running: troffer.visible
                 loops: Animation.Infinite
                 PauseAnimation { duration: 3200 }
                 NumberAnimation { to: 0.15; duration: 40 }
@@ -251,28 +334,26 @@ Node {
                 NumberAnimation { to: 0.1; duration: 30 }
                 NumberAnimation { to: 1; duration: 200 }
             }
-            position: Qt.vector3d(-interior.w / 2 + 150 + (index % cols) * 300,
-                                  interior.ceiling - 1,
-                                  store.backZ + 150 + Math.floor(index / cols) * 300)
-            Model { // metal frame
+            position: interior.trofferPos(interior.flickerIndex, interior.ceiling - 1)
+            Model {
                 castsShadows: false
                 source: "#Cube"
                 scale: Qt.vector3d(1.28, 0.02, 0.68)
                 materials: PrincipledMaterial { baseColor: "#b9b7b0"; metalness: 0.5; roughness: 0.4 }
             }
-            Model { // diffuser
+            Model {
                 castsShadows: false
                 source: "#Rectangle"
                 y: -1.2
                 eulerRotation.x: 90
                 scale: Qt.vector3d(1.2, 0.6, 1)
                 materials: PrincipledMaterial {
-                    baseColor: Qt.rgba(0.93 * troffer.glow + 0.05, 0.96 * troffer.glow + 0.04, troffer.glow, 1)
-                    emissiveFactor: Qt.vector3d(0.95 * troffer.glow, 0.98 * troffer.glow, troffer.glow)
-                    lighting: PrincipledMaterial.NoLighting
+                    baseColor: "#f4f6f8"
+                    roughness: 0.4
+                    emissiveFactor: Qt.vector3d(2.6 * troffer.glow, 2.7 * troffer.glow, 2.8 * troffer.glow)
                 }
             }
-            LightQuad { // halo on the ceiling around the panel
+            LightQuad {
                 y: -1.6
                 eulerRotation.x: 90
                 scale: Qt.vector3d(2.6, 1.7, 1)
@@ -280,14 +361,52 @@ Node {
                 strength: 0.9 * troffer.glow * interior.lightPools
                 visible: interior.lightPools > 0
             }
-            LightQuad { // pool of light on the floor below
+            LightQuad {
                 y: -(interior.ceiling - 1) + 0.6
                 eulerRotation.x: -90
                 scale: Qt.vector3d(3.4, 2.6, 1)
                 tint: "#fff7e8"
-                strength: 0.5 * troffer.glow * interior.lightPools
+                strength: 0.18 * troffer.glow * interior.lightPools
                 visible: interior.lightPools > 0
             }
+        }
+    }
+
+    // Air vents in the ceiling, between some of the light panels (instanced:
+    // one draw for the plates, one for the louvres).
+    readonly property var ventSpots: {
+        const cols = Math.max(1, Math.floor(interior.w / 600)), rows = Math.max(1, Math.floor(interior.depth / 600))
+        const out = []
+        for (let i = 0; i < cols * rows; ++i)
+            out.push(Qt.vector3d(-interior.w / 2 + 300 + (i % cols) * 600 + 150, interior.ceiling - 0.6,
+                                 store.backZ + 300 + Math.floor(i / cols) * 600))
+        return out
+    }
+    Node {
+        visible: !interior.off("vents")
+        Model { // grille plates
+            source: "#Cube"
+            castsShadows: false
+            receivesShadows: false
+            instancing: ListInstancing {
+                entries: interior.ventSpots.map(p => ({ p: p, s: Qt.vector3d(0.58, 0.012, 0.58) }))
+            }
+            materials: PrincipledMaterial { baseColor: "#e3e2dd"; roughness: 0.5; metalness: 0.2 }
+        }
+        Model { // louvres, dark gaps between them
+            source: "#Rectangle"
+            castsShadows: false
+            receivesShadows: false
+            instancing: ListInstancing {
+                entries: {
+                    const out = []
+                    for (const p of interior.ventSpots)
+                        for (let k = 0; k < 5; ++k)
+                            out.push({ p: Qt.vector3d(p.x, p.y - 0.8, p.z - 20 + k * 10), s: Qt.vector3d(0.44, 0.035, 1), r: Qt.vector3d(90, 0, 0) })
+                    return out
+                }
+            }
+            materials: PrincipledMaterial { baseColor: "#5d5d5a"; roughness: 0.8 }
         }
     }
 
@@ -298,7 +417,7 @@ Node {
         source: "#Rectangle"
         usedInBakedLighting: interior.bake
         bakedLightmap: BakedLightmap { enabled: interior.bake; key: wall.bakeKey }
-        materials: PrincipledMaterial { baseColorMap: wallTex; roughness: 0.88; normalMap: interior.detail ? plasterBump : null; normalStrength: 0.6 }
+        materials: PrincipledMaterial { baseColorMap: wallTex; roughness: 0.62; specularAmount: 0.6; normalMap: interior.detail ? plasterBump : null; normalStrength: 0.35 }
     }
     Wall { // back
         bakeKey: "wall-back"
@@ -317,13 +436,14 @@ Node {
         eulerRotation.y: -90
         scale: Qt.vector3d(interior.depth / 100, interior.ceiling / 100, 1)
     }
-    // Faded blue stripe and a scuffed skirting board along the walls.
+    // Blue stripe along the back wall, a scuffed skirting board along all three.
     Repeater3D {
-        model: 6
+        visible: !interior.off("walltrim")
+        model: 4
         Model {
             required property int index
-            readonly property int wall: index % 3
-            readonly property bool skirting: index >= 3
+            readonly property int wall: index === 0 ? 0 : index - 1
+            readonly property bool skirting: index >= 1
             source: "#Rectangle"
             position: wall === 0 ? Qt.vector3d(0, skirting ? 6 : 250, store.backZ + 1)
                     : Qt.vector3d((wall === 1 ? -1 : 1) * (store.halfWidth - 1), skirting ? 6 : 250, interior.midZ)
@@ -396,6 +516,7 @@ Node {
     readonly property real paneSide: store.halfWidth - store.doorHalfWidth - 60 // glass width per side
     readonly property int panes: Math.max(1, Math.round(paneSide / 260))
     Repeater3D {
+        visible: !interior.off("front")
         model: 2
         Node {
             id: side
@@ -461,14 +582,17 @@ Node {
         const spots = []
         const gap = 330
         const leftEnd = store.frontZ - 180, rightEnd = store.counter.z - 300
+        // Not where the wall racks stand.
+        const free = (side, z) => !store.wallRacks.some(r => r.side === side && z > r.z0 - 140 && z < r.z1 + 140)
         for (let z = store.backZ + 230; z <= leftEnd; z += gap)
-            spots.push({ side: -1, z: z })
+            if (free(-1, z)) spots.push({ side: -1, z: z })
         for (let z = store.backZ + 230 + gap / 2; z <= rightEnd; z += gap)
-            spots.push({ side: 1, z: z })
+            if (free(1, z)) spots.push({ side: 1, z: z })
         spots.sort((a, b) => a.z - b.z) // alternate sides as the films go
         return spots.slice(0, shop.wallpapers.length)
     }
     Repeater3D {
+        visible: !interior.off("posters")
         model: interior.posterSpots
         Node {
             required property var modelData
@@ -522,67 +646,63 @@ Node {
         }
     }
 
+    // The free-standing units: stepped chrome wire shelves on a beige
+    // slatwall spine, stepped slatwall ends, a dark plinth. The wire and the
+    // ends are one mesh each for the whole shop (see ShelvingGeometry).
+    Texture {
+        id: slatTex // slatwall: beige laminate with a groove every 7.6 cm
+        tilingModeHorizontal: Texture.Repeat
+        tilingModeVertical: Texture.Repeat
+        generateMipmaps: true
+        mipFilter: Texture.Linear
+        sourceItem: Canvas {
+            width: 256
+            height: 256
+            onPaint: {
+                const ctx = getContext("2d")
+                ctx.fillStyle = "#d6c6a1"
+                ctx.fillRect(0, 0, 256, 256)
+                let seed = 11
+                function rnd() { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646 }
+                for (let i = 0; i < 1800; ++i) { // laminate speckle
+                    ctx.globalAlpha = 0.08 + rnd() * 0.1
+                    ctx.fillStyle = rnd() < 0.5 ? "#b9a982" : "#e6d8b6"
+                    ctx.fillRect(rnd() * 256, rnd() * 256, 2, 1)
+                }
+                ctx.globalAlpha = 1
+                const step = 256 / 13
+                for (let i = 0; i < 13; ++i) {
+                    const y = Math.round(i * step)
+                    ctx.fillStyle = "#6f6248" // the groove's shadow
+                    ctx.fillRect(0, y, 256, 4)
+                    ctx.fillStyle = "#f0e4c6" // its lit lower edge
+                    ctx.fillRect(0, y + 4, 256, 1)
+                }
+            }
+        }
+    }
+    Model {
+        visible: !interior.off("wire")
+        geometry: ShelvingGeometry { layout: store; part: "wire" }
+        receivesShadows: false
+        castsShadows: false // thin wires under a light straight above: shadows not worth the vertices
+        materials: PrincipledMaterial { baseColor: "#cfd2d6"; metalness: 1; roughness: 0.3 }
+    }
+    Model {
+        visible: !interior.off("ends")
+        geometry: ShelvingGeometry { layout: store; part: "ends" }
+        materials: PrincipledMaterial { baseColorMap: slatTex; roughness: 0.6; specularAmount: 0.4 }
+    }
     Repeater3D {
+        visible: !interior.off("plinths")
         model: store.gondolas
-        Node {
-            id: unit
+        Part { // plinth
             required property var modelData
             required property int index
-            readonly property string k: "u" + index
-            readonly property real len: modelData.length
-            x: modelData.x
-            z: modelData.z
-
-            Part { // plinth
-                bakeKey: unit.k + "-plinth"
-                color: "#28469a"
-                y: 8
-                scale: Qt.vector3d(0.74, 0.16, unit.len / 100)
-            }
-            Part { // pegboard spine
-                bakeKey: unit.k + "-spine"
-                color: "#cfcabd"
-                rough: 0.9
-                y: 104
-                scale: Qt.vector3d(0.06, 1.92, unit.len / 100)
-            }
-            Repeater3D { // five shelves on each side
-                model: 10
-                Node {
-                    required property int index
-                    readonly property int side: index % 2 === 0 ? -1 : 1
-                    readonly property real level: [168, 134, 100, 66, 32][Math.floor(index / 2)]
-                    Part {
-                        color: "#b7bbc0"
-                        rough: 0.35
-                        metal: 0.4
-                        position: Qt.vector3d(side * 19, level - 1, 0)
-                        scale: Qt.vector3d(0.32, 0.02, unit.len / 100)
-                    }
-                    Part { // price channel along the front edge
-                        color: "#28469a"
-                        position: Qt.vector3d(side * 35, level - 2, 0)
-                        scale: Qt.vector3d(0.015, 0.05, unit.len / 100)
-                    }
-                }
-            }
-            Part { // top cap
-                bakeKey: unit.k + "-cap"
-                color: "#e3be2a"
-                rough: 0.5
-                y: 203
-                scale: Qt.vector3d(0.76, 0.05, unit.len / 100 + 0.04)
-            }
-            Repeater3D { // end panels
-                model: 2
-                Part {
-                    required property int index
-                    bakeKey: unit.k + "-end" + index
-                    color: "#28469a"
-                    position: Qt.vector3d(0, 103, (index === 0 ? -1 : 1) * (unit.len / 2 + 2))
-                    scale: Qt.vector3d(0.76, 2.06, 0.04)
-                }
-            }
+            bakeKey: "u" + index + "-plinth"
+            color: "#4a4a4c"
+            position: Qt.vector3d(modelData.x, 5, modelData.z)
+            scale: Qt.vector3d(0.92, 0.1, modelData.length / 100)
         }
     }
 
@@ -609,6 +729,7 @@ Node {
 
     // Aisle header boards above each run of shelves.
     Repeater3D {
+        visible: !interior.off("signs")
         model: store.signs
         Node {
             id: sign
@@ -619,17 +740,17 @@ Node {
                 castsShadows: false
                 source: "#Cube"
                 scale: Qt.vector3d(sign.modelData.width / 100, 0.4, 0.03)
-                materials: PrincipledMaterial { baseColor: "#0e1430"; roughness: 0.6 }
+                materials: PrincipledMaterial { baseColor: "#e9e8e3"; roughness: 0.5 }
             }
             SignFace {
                 z: 1.6
                 w: sign.modelData.width
                 h: 40
-                glow: 0.35
+                glow: 0.12
                 art: Rectangle {
                     width: Math.round(sign.modelData.width * 4)
                     height: 160
-                    color: "#0e1430"
+                    color: "#f6f5f1"
                     Rectangle {
                         anchors.bottom: parent.bottom
                         width: parent.width
@@ -642,7 +763,7 @@ Node {
                         width: parent.width - 40
                         horizontalAlignment: Text.AlignHCenter
                         text: sign.modelData.title.toUpperCase()
-                        color: sign.modelData.accent
+                        color: "#24408f"
                         font.family: Theme.display
                         font.weight: Font.Black
                         font.pixelSize: sign.modelData.first ? 96 : 70
@@ -658,6 +779,7 @@ Node {
 
     // Both ends of every unit carry its aisle name, on a printed card.
     Repeater3D {
+        visible: !interior.off("endsigns")
         model: store.endSigns
         Node {
             id: endSign
@@ -665,13 +787,13 @@ Node {
             position: Qt.vector3d(modelData.x, 0, modelData.z)
             eulerRotation.y: modelData.yaw
             SignFace {
-                position: Qt.vector3d(0, 196 - 45, 0.5)
-                w: 68
-                h: 90
+                position: Qt.vector3d(0, 166, 0.4)
+                w: 40
+                h: 62
                 glow: 0.08
                 art: Rectangle {
-                    width: 272
-                    height: 360
+                    width: 240
+                    height: 372
                     radius: 10
                     color: "#f3eee0"
                     border.color: endSign.modelData.accent
@@ -710,6 +832,7 @@ Node {
 
     // Handwritten "staff pick" cards hanging under 5-star and reviewed films.
     Repeater3D {
+        visible: !interior.off("talkers")
         model: store.talkers
         Node {
             id: talker
@@ -717,10 +840,14 @@ Node {
             readonly property var film: shop.film(modelData.film)
             position: modelData.position
             eulerRotation: Qt.vector3d(0, modelData.yaw, (modelData.film % 7) - 3)
-            Node {
-                position: Qt.vector3d(-6, 4, 0)
-                scale: Qt.vector3d(0.08, 0.08, 0.08)
-                Rectangle {
+            // A printed card (a texture drawn once), not a live 2D item:
+            // 60 of those cost a 2D render each, every frame.
+            SignFace {
+                position: Qt.vector3d(0, 0.16, 0.2)
+                w: 12
+                h: 7.68
+                glow: 0.04
+                art: Rectangle {
                     width: 150
                     height: 96
                     color: "#fff59d"
@@ -746,6 +873,7 @@ Node {
 
     // Candy and popcorn rack by the counter.
     Node {
+        visible: !interior.off("candy")
         position: store.candyRack
         Model {
             source: "#Cube"
@@ -753,23 +881,26 @@ Node {
             scale: Qt.vector3d(0.7, 1.4, 0.45)
             materials: PrincipledMaterial { baseColor: "#cfcabd"; roughness: 0.7 }
         }
-        Repeater3D {
-            model: 24
-            Model {
-                required property int index
-                source: "#Cube"
-                position: Qt.vector3d(-26 + (index % 6) * 10.5, 30 + Math.floor(index / 6) * 30, 24)
-                scale: Qt.vector3d(0.08, 0.12, 0.04)
-                materials: PrincipledMaterial {
-                    baseColor: ["#e6332a", "#e3be2a", "#2f5fd0", "#ff3d9a", "#39b54a", "#f08a24"][(index * 5) % 6]
-                    roughness: 0.4
+        Model { // the sweets: one instanced draw, coloured per packet
+            source: "#Cube"
+            castsShadows: false
+            instancing: ListInstancing {
+                entries: {
+                    const colours = ["#e6332a", "#e3be2a", "#2f5fd0", "#ff3d9a", "#39b54a", "#f08a24"]
+                    const out = []
+                    for (let i = 0; i < 24; ++i)
+                        out.push({ p: Qt.vector3d(-26 + (i % 6) * 10.5, 30 + Math.floor(i / 6) * 30, 24),
+                                   s: Qt.vector3d(0.08, 0.12, 0.04), c: colours[(i * 5) % 6] })
+                    return out
                 }
             }
+            materials: PrincipledMaterial { baseColor: "white"; roughness: 0.4 }
         }
     }
 
     // Banners hanging from the ceiling.
     Repeater3D {
+        visible: !interior.off("banners")
         model: ["BE KIND · REWIND", "MOST RENTED THIS WAY →", "NEW RELEASES EVERY WEEK"]
         Node {
             id: banner
@@ -789,10 +920,12 @@ Node {
                 Node {
                     required property int index
                     eulerRotation.y: index * 180
-                    Node {
-                        position: Qt.vector3d(-137.5, 0, 0.6) // centred on the rod
-                        scale: Qt.vector3d(0.25, 0.25, 0.25)
-                        Rectangle {
+                    SignFace { // a printed banner, centred on the rod
+                        position: Qt.vector3d(0, -18.75, 0.6)
+                        w: 275
+                        h: 37.5
+                        glow: 0.3
+                        art: Rectangle {
                             width: 1100
                             height: 150
                             color: banner.index === 1 ? "#e3be2a" : "#28469a"
@@ -822,21 +955,34 @@ Node {
     Node {
         position: Qt.vector3d(store.halfWidth - 2, 0, store.counter.z)
         eulerRotation.y: -90
-        visible: shop.mostWatched.length > 0
-        Node {
-            position: Qt.vector3d(-210, 326, 0.5)
-            scale: Qt.vector3d(0.25, 0.25, 0.25)
-            Text {
-                width: 1680
-                text: "MOST RENTED OF ALL TIME"
-                color: "#ffb300"
-                style: Text.Outline
-                styleColor: "#5a3c00"
-                horizontalAlignment: Text.AlignHCenter
-                font.family: Theme.display
-                font.weight: Font.Black
-                font.pixelSize: 110
-                font.letterSpacing: 6
+        visible: shop.mostWatched.length > 0 && !interior.off("hall")
+        Repeater3D { // the title in raised gold letters: a dark shadow layer, then the letters
+            model: 2
+            Model {
+                required property int index
+                source: "#Rectangle"
+                castsShadows: false
+                position: Qt.vector3d(index === 0 ? 1.2 : 0, 307 - (index === 0 ? 1.2 : 0), index === 0 ? 0.6 : 2)
+                scale: Qt.vector3d(4.2, 0.4, 1)
+                materials: PrincipledMaterial {
+                    roughness: 0.35
+                    metalness: index === 0 ? 0 : 0.3
+                    alphaMode: PrincipledMaterial.Blend
+                    // a little backlight, so the gold reads as gold, not brown
+                    emissiveMap: index === 0 ? null : hallLetters
+                    emissiveFactor: Qt.vector3d(0.45, 0.45, 0.45)
+                    baseColorMap: Texture {
+                        id: hallLetters
+                        generateMipmaps: true
+                        mipFilter: Texture.Linear
+                        textureData: LetteringTexture {
+                            text: "MOST RENTED OF ALL TIME"
+                            color: index === 0 ? "#5a3c00" : "#ffb300"
+                            pixelWidth: 1680
+                            pixelHeight: 160
+                        }
+                    }
+                }
             }
         }
         Repeater3D {
@@ -870,10 +1016,12 @@ Node {
                         }
                     }
                 }
-                Node { // "×3" plaque
-                    position: Qt.vector3d(-30, -60, 1)
-                    scale: Qt.vector3d(0.25, 0.25, 0.25)
-                    Rectangle {
+                SignFace { // "RENTED ×3" plaque
+                    position: Qt.vector3d(0, -68, 1)
+                    w: 60
+                    h: 16
+                    glow: 0.2
+                    art: Rectangle {
                         width: 240
                         height: 64
                         radius: 8
@@ -893,8 +1041,110 @@ Node {
         }
     }
 
+    // TVs hung from the ceiling in clusters of 2 or 4, back to back on one
+    // pole, each playing its own rotation of film backdrops.
+    component TvCluster: Node {
+        id: cluster
+        property int count: 2
+        property int offset: 0
+        readonly property real reach: count > 2 ? 60 : 28 // TV centre from the pole
+        readonly property real hang: 268                  // top of the sets
+        Model { // pole from the ceiling
+            source: "#Cylinder"
+            castsShadows: false
+            position: Qt.vector3d(0, (interior.ceiling + cluster.hang) / 2, 0)
+            scale: Qt.vector3d(0.05, (interior.ceiling - cluster.hang) / 100, 0.05)
+            materials: PrincipledMaterial { baseColor: "#2a2a2c"; metalness: 0.6; roughness: 0.4 }
+        }
+        Repeater3D {
+            model: cluster.count
+            Node {
+                id: arm
+                required property int index
+                eulerRotation.y: index * 360 / cluster.count
+                Model { // arm out to the set
+                    source: "#Cube"
+                    castsShadows: false
+                    position: Qt.vector3d(0, cluster.hang, cluster.reach / 2)
+                    scale: Qt.vector3d(0.05, 0.04, cluster.reach / 100)
+                    materials: PrincipledMaterial { baseColor: "#2a2a2c"; metalness: 0.6; roughness: 0.4 }
+                }
+                Node {
+                    position: Qt.vector3d(0, cluster.hang - 28, cluster.reach)
+                    eulerRotation.x: 10 // tilted down towards you
+                    Model { // the set
+                        source: "#Cube"
+                        scale: Qt.vector3d(0.66, 0.52, 0.5)
+                        materials: PrincipledMaterial { baseColor: "#1e1e21"; roughness: 0.45 }
+                    }
+                    Model { // screen
+                        source: "#Rectangle"
+                        position: Qt.vector3d(-4, -2, 25.2)
+                        scale: Qt.vector3d(0.5, 0.38, 1)
+                        materials: PrincipledMaterial {
+                            lighting: PrincipledMaterial.NoLighting
+                            baseColorMap: Texture {
+                                sourceItem: Image {
+                                    id: picture
+                                    property int n: cluster.offset + arm.index * 7
+                                    width: 320
+                                    height: 240
+                                    source: shop.wallpapers.length > 0 ? shop.wallpapers[n % shop.wallpapers.length] : ""
+                                    sourceSize.width: 320
+                                    fillMode: Image.PreserveAspectCrop
+                                    asynchronous: true
+                                    Timer {
+                                        interval: 6000 + arm.index * 700 + cluster.offset * 113
+                                        running: true
+                                        repeat: true
+                                        onTriggered: picture.n++
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Model { // power light
+                        source: "#Rectangle"
+                        position: Qt.vector3d(26, -22, 25.3)
+                        scale: Qt.vector3d(0.015, 0.015, 1)
+                        materials: PrincipledMaterial { baseColor: "#ff3b2f"; lighting: PrincipledMaterial.NoLighting }
+                    }
+                }
+            }
+        }
+    }
+    // Over the open aisles, never over a unit (the sets hang below its signs).
+    readonly property var aisleXs: {
+        const xs = [...new Set(store.gondolas.map(g => Math.round(g.x)))].sort((a, b) => a - b)
+        const mids = []
+        for (let i = 0; i + 1 < xs.length; ++i)
+            mids.push((xs[i] + xs[i + 1]) / 2)
+        return mids.length ? mids : [0]
+    }
+    TvCluster { // by the entrance
+        visible: !interior.off("tvs")
+        count: 4
+        offset: 0
+        position: Qt.vector3d(-store.halfWidth * 0.4, 0, store.frontZ * 0.55)
+        eulerRotation.y: 20
+    }
+    TvCluster { // over a middle aisle, facing up and down it
+        visible: !interior.off("tvs")
+        count: 2
+        offset: 3
+        position: Qt.vector3d(interior.aisleXs[0], 0, store.backZ * 0.35)
+    }
+    TvCluster { // in the cross aisle at the back
+        visible: !interior.off("tvs")
+        count: 4
+        offset: 9
+        position: Qt.vector3d(interior.aisleXs[interior.aisleXs.length - 1], 0, store.backZ + 190)
+        eulerRotation.y: 45
+    }
+
     // ------------------------------------------------------------ counter
     Node {
+        visible: !interior.off("counter")
         position: store.counter
         Part { // desk
             bakeKey: "counter-desk"

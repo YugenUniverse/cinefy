@@ -4,7 +4,9 @@
 #include "LightBaker.h"
 #include "Shop.h"
 
+#include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <qpa/qwindowsysteminterface.h>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -17,6 +19,11 @@
 
 namespace {
 QtMessageHandler defaultHandler = nullptr;
+double appT0()
+{
+    static const double t0 = double(QDateTime::currentMSecsSinceEpoch());
+    return t0;
+}
 
 // Drop two harmless, very noisy Qt Quick 3D messages: one is printed for
 // every 2D item used as a 3D texture (every sign), the other on quit.
@@ -31,6 +38,7 @@ void quietHandler(QtMsgType type, const QMessageLogContext &context, const QStri
 
 int main(int argc, char **argv)
 {
+    appT0(); // start of the clock for the perf timings
     defaultHandler = qInstallMessageHandler(quietHandler);
     // First-person mouse look needs to hold the pointer in the middle of the
     // window. Native Wayland doesn't allow that, XWayland does, so prefer it
@@ -38,6 +46,10 @@ int main(int argc, char **argv)
     if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM") && !qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")
         && !qEnvironmentVariableIsEmpty("DISPLAY") && !qEnvironmentVariableIsSet("CINEFY_NATIVE_WAYLAND"))
         qputenv("QT_QPA_PLATFORM", "xcb");
+
+    // CINEFY_PERF=1: print frame timings per 3D layer (GPU time needs timestamps).
+    if (qEnvironmentVariableIsSet("CINEFY_PERF"))
+        qputenv("QSG_RHI_PROFILE", "1");
 
     QGuiApplication app(argc, argv);
     // Qt Quick 3D needs a modern OpenGL context (3.3+ core, or GLES 3).
@@ -70,6 +82,13 @@ int main(int argc, char **argv)
     engine.rootContext()->setContextProperty(QStringLiteral("devMute"),
         qEnvironmentVariableIsSet("CINEFY_MUTE") || qEnvironmentVariableIsSet("CINEFY_SNAPSHOT")
             || qEnvironmentVariableIsSet("CINEFY_BAKE"));
+    engine.rootContext()->setContextProperty(QStringLiteral("devPerf"), qEnvironmentVariableIsSet("CINEFY_PERF"));
+    engine.rootContext()->setContextProperty(QStringLiteral("devT0"), appT0());
+    // CINEFY_OFF="ao,shadows,..." switches features off, to measure what they cost.
+    engine.rootContext()->setContextProperty(QStringLiteral("devOff"), qEnvironmentVariable("CINEFY_OFF"));
+    // CINEFY_QUALITY=0|1|2 overrides the graphics quality setting (for measuring).
+    engine.rootContext()->setContextProperty(QStringLiteral("devQuality"),
+        qEnvironmentVariableIsSet("CINEFY_QUALITY") ? qEnvironmentVariableIntValue("CINEFY_QUALITY") : -1);
     QObject::connect(
         &engine, &QQmlApplicationEngine::objectCreationFailed, &app,
         [] { QCoreApplication::exit(1); }, Qt::QueuedConnection);
@@ -77,10 +96,38 @@ int main(int argc, char **argv)
 
     // `cinefy path/to/export.zip` opens that export; otherwise reopen the last one.
     const QStringList args = QCoreApplication::arguments();
+    QElapsedTimer loadClock;
+    loadClock.start();
     if (args.size() > 1)
         shop.loadExport(QUrl::fromUserInput(args.at(1), QDir::currentPath(), QUrl::AssumeLocalFile));
     else
         shop.reopenLast();
+    if (qEnvironmentVariableIsSet("CINEFY_PERF"))
+        qInfo().noquote() << QStringLiteral("perf: export loaded in %1 ms (done at %2 ms)").arg(loadClock.elapsed()).arg(QDateTime::currentMSecsSinceEpoch() - qint64(appT0()));
+    // Dev aid: CINEFY_PERF=1 also counts whole frames (all layers + 2D).
+    if (qEnvironmentVariableIsSet("CINEFY_PERF")) {
+        if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0))) {
+            QObject::connect(window, &QQuickWindow::frameSwapped, &app, [] {
+                static bool once = false;
+                if (!once) {
+                    once = true;
+                    qInfo().noquote() << QStringLiteral("perf: first frame at %1 ms").arg(QDateTime::currentMSecsSinceEpoch() - qint64(appT0()));
+                }
+            });
+            auto *frames = new int(0);
+            auto *clock = new QElapsedTimer;
+            clock->start();
+            QObject::connect(window, &QQuickWindow::frameSwapped, &app, [frames, clock] {
+                ++*frames;
+                if (clock->elapsed() >= 2000) {
+                    qInfo().noquote() << QStringLiteral("perf: window %1 fps").arg(*frames * 1000.0 / clock->elapsed(), 0, 'f', 1);
+                    *frames = 0;
+                    clock->restart();
+                }
+            });
+        }
+    }
+
     // Dev aid: CINEFY_SNAPSHOT=out.png renders the window to an image after a few seconds, then quits.
     const QString snapshot = qEnvironmentVariable("CINEFY_SNAPSHOT");
     if (!snapshot.isEmpty()) {

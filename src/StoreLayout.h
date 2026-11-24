@@ -11,10 +11,13 @@ class AisleModel;
 
 // Where everything stands in the 3D store (units are centimetres, Y up).
 //
-// Every aisle (category) gets its own short, double-sided shelving units; big
-// aisles are split over several units. Units stand in rows along Z, with a
-// walk-through gap between units and a wider gap between categories. Tapes
-// stand face-out on five shelves. The store grows to fit the library.
+// Every aisle (category) gets double-sided shelving units sized to its films,
+// so the shelves are full; a small aisle takes one side of a unit and shares
+// it with another. Units stand in rows along Z, with a walk-through gap
+// between units and a wider gap between categories. Two big aisles (the whole
+// back catalogue and the watchlist) go on tall racks along the side walls.
+// Tapes stand face-out, leaning back on angled shelves. The store grows to
+// fit the library.
 class StoreLayout : public QObject
 {
     Q_OBJECT
@@ -33,6 +36,7 @@ class StoreLayout : public QObject
     Q_PROPERTY(QVector3D returnBin READ returnBin NOTIFY changed)
     Q_PROPERTY(QVector3D dropBox READ dropBox NOTIFY changed)
     Q_PROPERTY(QVariantMap wallRack READ wallRack NOTIFY changed) // {x0, x1, z}
+    Q_PROPERTY(QVariantList wallRacks READ wallRacks NOTIFY changed) // side-wall racks
     Q_PROPERTY(QVariantList cars READ cars NOTIFY changed)
     Q_PROPERTY(QVector3D entrance READ entrance NOTIFY changed)
     Q_PROPERTY(float eyeHeight READ eyeHeight CONSTANT)
@@ -47,19 +51,25 @@ public:
     // Shared dimensions (cm).
     // A big-box rental case, in cm (shelves are 34 cm apart, so it still fits).
     static constexpr float TapeW = 14.5f, TapeH = 24.0f, TapeD = 3.8f, Pitch = 16.8f;
-    static constexpr int PerShelf = 10, Shelves = 5, PerSection = PerShelf * Shelves;
-    static constexpr float SectionLen = PerShelf * Pitch;
-    static constexpr int MaxUnitSections = 3;       // a unit is at most ~3.7 m long
-    static constexpr float HalfDepth = 36.0f;       // units are 72 cm deep
+    static constexpr int Shelves = 5;
+    static constexpr int MinPerShelf = 6, MaxPerShelf = 30; // a unit is 1 to ~5 m long
+    static constexpr int SmallAisle = Shelves * 12;          // fits on one side of a unit
+    static constexpr int WallShelves = 6, BayWidth = 6;      // wall racks: 6 high, 1 m bays
+    static constexpr float WallDepth = 44.0f;
+    static constexpr float ShelfTilt = 8.0f;                 // degrees, front edge up
+    static constexpr float HalfDepth = 46.0f;       // units are 92 cm deep at the floor
     static constexpr float RowSpacing = 380.0f;     // between rows of units
     static constexpr float UnitGap = 110.0f;        // between units of one aisle
     static constexpr float CategoryGap = 230.0f;    // between aisles
     static constexpr float RowMaxLength = 2300.0f;
-    static constexpr float TapeInset = 28.0f;       // tape centre from unit centre line
     static constexpr float SideAisle = 360.0f, BackAisle = 360.0f, FrontArea = 1050.0f;
     static constexpr float EyeHeight = 162.0f;
     static constexpr float WallT = 14.0f, DoorHalf = 90.0f, StreetDepth = 2400.0f;
     static float shelfLevel(int shelf); // top surface of shelf 0 (highest) .. 4
+    static float wallLevel(int shelf);  // wall racks: shelf 0 (highest) .. 5
+    // Units step out like a staircase: each lower wire shelf reaches further
+    // out. Distance of shelf `shelf`'s front lip from the unit's centre line.
+    static float stepFront(int shelf) { return 22.0f + 6.0f * float(shelf); }
 
     struct Tape {
         int film;
@@ -69,6 +79,7 @@ public:
         int shelf;
         bool lying = false; // lying flat, cover up
         float yaw = 0;      // for tapes lying flat
+        float lean = 0;     // how far it leans back, degrees (0: a slight random lean)
     };
 
     explicit StoreLayout(QObject *parent = nullptr);
@@ -95,6 +106,7 @@ public:
     QVector3D returnBin() const { return m_returnBin; }
     // the blue tape-return box out on the pavement
     QVariantMap wallRack() const { return m_wallRack; }
+    QVariantList wallRacks() const;
     QVariantList cars() const { return m_cars; }
     QVector3D dropBox() const { return QVector3D(DoorHalf + 300, 0, m_frontZ + 130); }
     QVector3D entrance() const { return m_entrance; }
@@ -127,13 +139,21 @@ private:
         QString id, title, subtitle, accent;
         int count = 0;
         int firstUnit = 0;
+        int firstFacing = -1; // which side of that unit
     };
+    // A double-sided gondola (wall == 0), or a one-sided rack against a side
+    // wall (wall -1: left wall, tapes face +X; +1: right wall, face -X).
     struct Unit {
-        int category;
-        int row;
-        float zFront, zBack;
-        int sections;
-        bool first; // first unit of its category
+        int catA = -1, catB = -1; // the -X side, the +X side (-1: empty)
+        int row = 0;
+        float zFront = 0, zBack = 0;
+        int perShelf = MinPerShelf;
+        bool firstA = false, firstB = false; // first unit of that side's category
+        int wall = 0;
+        float x = 0;
+        int category(int facing) const { return facing < 0 ? catA : catB; }
+        bool first(int facing) const { return facing < 0 ? firstA : firstB; }
+        float depth() const { return wall ? WallDepth : HalfDepth; }
     };
 
     float rowX(int row) const;

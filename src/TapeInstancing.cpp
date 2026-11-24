@@ -55,7 +55,8 @@ QByteArray TapeInstancing::getInstanceBuffer(int *instanceCount)
                 // A lived-in shelf: every tape leans back a little differently,
                 // some are a bit crooked or pushed in.
                 const quint32 h = quint32(i) * 2654435761u;
-                const float lean = -4.0f - float(h % 6);
+                // On the angled shelves they lean right back against the unit.
+                const float lean = t.lean != 0 ? t.lean - float(h % 3) : -4.0f - float(h % 6);
                 const float twist = (float((h >> 8) % 9) - 4.0f) * 0.9f;
                 const float pushed = float((h >> 16) % 4) * 0.6f;
                 const QVector3D euler = t.lying ? QVector3D(-90.0f, t.yaw, 0.0f)
