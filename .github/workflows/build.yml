@@ -10,12 +10,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        qt: ['6.12.*'] # the version Cinefy is developed and tested with
-        include:
-          # Qt 6.11+ for Windows uses a repository layout the installer
-          # (aqtinstall 3.3) can't read yet; 6.10 works, minus 3D culling.
-          - os: windows-latest
-            qt: '6.10.*'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +17,10 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: ${{ matrix.qt }}
+          # 6.12, the version Cinefy is developed and tested with. Qt 6.11+
+          # for Windows uses a repository layout the installer (aqtinstall
+          # 3.3) can't read yet, so Windows gets 6.10 (works, minus 3D culling).
+          version: ${{ matrix.os == 'windows-latest' && '6.10.*' || '6.12.*' }}
           modules: 'qtquick3d qtshadertools qtmultimedia qtquicktimeline' # Quick3D needs timeline since 6.12
           cache: true
 
