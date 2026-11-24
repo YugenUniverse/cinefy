@@ -49,10 +49,12 @@ jobs:
           QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake
           QML_SOURCES_PATHS: ${{ github.workspace }}/qml
           EXTRA_QT_PLUGINS: 'multimedia;waylandcompositor'
-          EXTRA_PLATFORM_PLUGINS: 'libqwayland-egl.so;libqwayland-generic.so'
           APPIMAGE_EXTRACT_AND_RUN: '1'
         run: |
           export LD_LIBRARY_PATH="$QT_ROOT_DIR/lib:$LD_LIBRARY_PATH"
+          # Wayland support (its plugin file names vary between Qt versions).
+          export EXTRA_PLATFORM_PLUGINS=$(cd "$QT_ROOT_DIR/plugins/platforms" && ls libqwayland*.so | paste -sd ';')
+          echo "Wayland plugins: $EXTRA_PLATFORM_PLUGINS"
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
           chmod +x linuxdeploy*.AppImage
