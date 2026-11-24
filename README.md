@@ -73,9 +73,26 @@ or the membership card, or set `TMDB_API_KEY`.
 
 ## Where things are stored
 
-- `~/.config/cinefy/cinefy.conf`: TMDB key and last opened export
-- `~/.cache/cinefy/matches.json`: TMDB lookups (each film is only looked up once)
-- `~/.cache/cinefy/images/`: poster and backdrop cache (the shop works offline once stocked)
+Cinefy uses each system's standard places (Qt's `QSettings` and `QStandardPaths`):
+
+| | Settings | Cache |
+|---|---|---|
+| Linux | `~/.config/cinefy/cinefy.conf` | `~/.cache/cinefy/` |
+| macOS | `~/Library/Preferences/com.cinefy.cinefy.plist` | `~/Library/Caches/cinefy/` |
+| Windows | registry, `HKEY_CURRENT_USER\Software\cinefy\cinefy` | `%LOCALAPPDATA%\cinefy\cache\` |
+
+The settings hold the TMDB key, the last opened export and your preferences
+(graphics quality, mouse sensitivity, volume). The cache holds:
+
+- `matches.json`: TMDB lookups (each film is only looked up once)
+- `images/`: poster and backdrop downloads (the shop works offline once stocked)
+- `covers-atlas.bin`: every cover packed into one texture, so the shop opens without redrawing them
+- `lightmaps.bin`: baked lighting, if you baked it from the pause menu
+- `sounds/`: the generated sound effects and radio loops
+- `q3dshadercache-*`, `qtshadercache-*`, `qtpipelinecache-*`: Qt's compiled shaders (faster start-up)
+
+Deleting the cache is safe: everything in it is fetched or rebuilt on the next start.
+Deleting the settings as well starts Cinefy as a new user.
 
 ## Layout
 
