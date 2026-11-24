@@ -19,6 +19,7 @@ jobs:
         with:
           version: '6.12.*' # the version Cinefy is developed and tested with
           modules: 'qtquick3d qtshadertools qtmultimedia qtquicktimeline' # Quick3D needs timeline since 6.12
+          aqtversion: '>=3.2' # the newest: Qt 6.12's Windows packages use a newer repository layout
           cache: true
 
       - name: Linux build tools
